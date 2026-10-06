@@ -173,11 +173,11 @@ export class ProductRepository implements IProductRepository {
   public findAllVariantsActive(): ProductVariantWithProduct[] {
     if (!this.findAllVariantsActiveStmt) {
       this.findAllVariantsActiveStmt = this.db.prepare(`
-        SELECT pv.*, p.product_code, p.name AS product_name, p.unit_type, p.category
+        SELECT pv.*, COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS product_code, p.name AS product_name, p.unit_type, p.category
         FROM product_variants pv
         JOIN products p ON pv.product_id = p.id
         WHERE pv.is_active = 1 AND p.is_active = 1
-        ORDER BY p.category, p.name, pv.variant_name
+        ORDER BY CAST(COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS INTEGER) ASC
       `);
     }
     return this.findAllVariantsActiveStmt.all() as ProductVariantWithProduct[];
@@ -186,7 +186,7 @@ export class ProductRepository implements IProductRepository {
   public findVariantById(id: number): ProductVariantWithProduct {
     if (!this.findVariantByIdStmt) {
       this.findVariantByIdStmt = this.db.prepare(`
-        SELECT pv.*, p.product_code, p.name AS product_name, p.unit_type, p.category
+        SELECT pv.*, COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS product_code, p.name AS product_name, p.unit_type, p.category
         FROM product_variants pv
         JOIN products p ON pv.product_id = p.id
         WHERE pv.id = ?
@@ -313,10 +313,22 @@ export class InvoiceRepository implements IInvoiceRepository {
     const invoice = this.findByIdStmt.get(id) as Invoice | undefined;
     if (!invoice) throw new Error(`Invoice #${id} not found`);
 
-    const items = this.db.prepare('SELECT * FROM invoice_items WHERE invoice_id = ?').all(id) as InvoiceItem[];
+    const items = this.findItemsByInvoiceId(id);
     const payments = this.db.prepare('SELECT * FROM payments WHERE invoice_id = ?').all(id) as any[];
 
     return { invoice, items, payments };
+  }
+
+  public findLatestDraft(): InvoiceDetail | null {
+    const row = this.db.prepare("SELECT id FROM invoices WHERE status = 'draft' ORDER BY id DESC LIMIT 1").get() as { id: number } | undefined;
+    if (!row) return null;
+    return this.findById(row.id);
+  }
+
+  public findLatestCompleted(): InvoiceDetail | null {
+    const row = this.db.prepare("SELECT id FROM invoices WHERE status IN ('completed', 'void') ORDER BY COALESCE(completed_at, created_at) DESC, id DESC LIMIT 1").get() as { id: number } | undefined;
+    if (!row) return null;
+    return this.findById(row.id);
   }
 
   public findByInvoiceNumber(invoiceNumber: string): InvoiceDetail | undefined {
@@ -349,6 +361,8 @@ export class InvoiceRepository implements IInvoiceRepository {
           dressing_charge_paise = @dressing_charge_paise,
           round_off_paise = @round_off_paise,
           print_delivery_token = @print_delivery_token,
+          is_delivery = COALESCE(@is_delivery, is_delivery),
+          delivery_charge_paise = COALESCE(@delivery_charge_paise, delivery_charge_paise),
           narration = @narration,
           shop_name_snapshot = @shop_name_snapshot,
           shop_address_snapshot = @shop_address_snapshot,
@@ -366,6 +380,8 @@ export class InvoiceRepository implements IInvoiceRepository {
       round_off_paise: update.round_off_paise ?? 0,
       narration: update.narration ?? null,
       print_delivery_token: update.print_delivery_token ? 1 : 0,
+      is_delivery: update.is_delivery !== undefined ? (update.is_delivery ? 1 : 0) : null,
+      delivery_charge_paise: update.delivery_charge_paise ?? null,
       discount_reason: update.discount_reason ?? null,
       discount_applied_by: update.discount_applied_by ?? null,
     });
@@ -425,11 +441,13 @@ export class InvoiceRepository implements IInvoiceRepository {
         INSERT INTO invoice_items (
           invoice_id, product_variant_id, quantity_grams, quantity_units,
           rate_paise_snapshot, line_subtotal_paise, gst_rate_percent_snapshot, line_total_paise,
-          override_applied, override_reason, overridden_by
+          override_applied, override_reason, overridden_by,
+          stock_source, refrigerator_stock_id
         ) VALUES (
           @invoice_id, @product_variant_id, @quantity_grams, @quantity_units,
           @rate_paise_snapshot, @line_subtotal_paise, @gst_rate_percent_snapshot, @line_total_paise,
-          @override_applied, @override_reason, @overridden_by
+          @override_applied, @override_reason, @overridden_by,
+          @stock_source, @refrigerator_stock_id
         )
       `);
     }
@@ -445,6 +463,8 @@ export class InvoiceRepository implements IInvoiceRepository {
       override_applied: item.override_applied ? 1 : 0,
       override_reason: item.override_reason ?? null,
       overridden_by: item.overridden_by ?? null,
+      stock_source: item.stock_source ?? 'none',
+      refrigerator_stock_id: item.refrigerator_stock_id ?? null,
     });
     const created = this.db.prepare('SELECT * FROM invoice_items WHERE id = ?').get(result.lastInsertRowid) as InvoiceItem | undefined;
     if (!created) throw new Error('Failed to create invoice item');
@@ -475,12 +495,12 @@ export class InvoiceRepository implements IInvoiceRepository {
   public findItemsByInvoiceId(invoiceId: number): InvoiceItem[] {
     if (!this.findItemsByInvoiceIdStmt) {
       this.findItemsByInvoiceIdStmt = this.db.prepare(`
-        SELECT ii.*, pv.variant_name, p.name AS product_name, p.product_code, p.unit_type, p.category
+        SELECT ii.*, pv.variant_name, p.name AS product_name, COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS product_code, p.unit_type, p.category
         FROM invoice_items ii
-        JOIN product_variants pv ON ii.product_variant_id = pv.id
-        JOIN products p ON pv.product_id = p.id
+        LEFT JOIN product_variants pv ON ii.product_variant_id = pv.id
+        LEFT JOIN products p ON pv.product_id = p.id
         WHERE ii.invoice_id = ?
-        ORDER BY ii.id
+        ORDER BY ii.id ASC
       `);
     }
     return this.findItemsByInvoiceIdStmt.all(invoiceId) as InvoiceItem[];
@@ -488,10 +508,10 @@ export class InvoiceRepository implements IInvoiceRepository {
 
   public findItemById(id: number): InvoiceItem {
     const item = this.db.prepare(`
-      SELECT ii.*, pv.variant_name, p.name AS product_name, p.product_code, p.unit_type, p.category
+      SELECT ii.*, pv.variant_name, p.name AS product_name, COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS product_code, p.unit_type, p.category
       FROM invoice_items ii
-      JOIN product_variants pv ON ii.product_variant_id = pv.id
-      JOIN products p ON pv.product_id = p.id
+      LEFT JOIN product_variants pv ON ii.product_variant_id = pv.id
+      LEFT JOIN products p ON pv.product_id = p.id
       WHERE ii.id = ?
     `).get(id) as InvoiceItem | undefined;
     if (!item) throw new NotFoundError(`Invoice item with id ${id} not found`);
@@ -698,8 +718,20 @@ export class InventoryRepository implements IInventoryRepository {
   public findAllLedger(): StockStatusRow[] {
     return this.db.prepare(`
       SELECT 
-        sl.*, 
-        pv.variant_name, pv.parent_variant_id, p.name as product_name, p.product_code, p.category, p.unit_type, p.is_processed_cut,
+        COALESCE(sl.id, 0) as id,
+        pv.id as product_variant_id,
+        COALESCE(sl.quantity_grams, 0) as quantity_grams,
+        COALESCE(sl.quantity_units, 0) as quantity_units,
+        COALESCE(sl.safety_threshold_grams, 5000) as safety_threshold_grams,
+        COALESCE(sl.safety_threshold_units, 10) as safety_threshold_units,
+        COALESCE(sl.updated_at, CURRENT_TIMESTAMP) as updated_at,
+        pv.variant_name,
+        pv.parent_variant_id,
+        p.name as product_name,
+        COALESCE(pv.product_code, p.product_code) as product_code,
+        p.category,
+        pv.unit_type,
+        pv.is_processed_cut,
         (
           SELECT COALESCE(SUM(ii.quantity_grams), SUM(ii.quantity_units), 0)
           FROM invoice_items ii
@@ -708,9 +740,10 @@ export class InventoryRepository implements IInventoryRepository {
             AND i.status = 'completed'
             AND i.completed_at >= datetime('now', '-30 days')
         ) as thirty_day_sales
-      FROM stock_ledger sl
-      JOIN product_variants pv ON sl.product_variant_id = pv.id
+      FROM product_variants pv
       JOIN products p ON pv.product_id = p.id
+      LEFT JOIN stock_ledger sl ON sl.product_variant_id = pv.id
+      WHERE pv.is_active = 1
       ORDER BY p.category, p.name, pv.variant_name
     `).all() as StockStatusRow[];
   }

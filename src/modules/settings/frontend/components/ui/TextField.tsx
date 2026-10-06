@@ -1,13 +1,13 @@
 import React from 'react';
 
 interface TextFieldProps {
-  value: string;
+  value: string | number;
   onChange: (val: string) => void;
   placeholder?: string;
   disabled?: boolean;
   prefix?: React.ReactNode;
   suffix?: React.ReactNode;
-  type?: 'text' | 'email' | 'tel' | 'password';
+  type?: 'text' | 'email' | 'tel' | 'password' | 'number';
   className?: string;
   id?: string;
 }

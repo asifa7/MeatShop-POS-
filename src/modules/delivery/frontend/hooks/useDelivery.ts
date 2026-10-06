@@ -215,6 +215,38 @@ export function useRecordCOD() {
   });
 }
 
+export function useMarkPaymentReceived() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: { deliveryId: number; isPaid?: boolean }) => {
+      const res = await window.api.invoke(IPC_CHANNELS.DELIVERY.MARK_PAYMENT_RECEIVED, params);
+      if (!res.success) throw new Error(res.error?.message || 'Failed to update payment status');
+      return res.data as DeliveryOrder;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['deliveries'] });
+      qc.invalidateQueries({ queryKey: ['delivery-stats'] });
+      qc.invalidateQueries({ queryKey: ['delivery-exceptions'] });
+    },
+  });
+}
+
+export function useMarkDelivered() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: { deliveryId: number; isDelivered?: boolean }) => {
+      const res = await window.api.invoke(IPC_CHANNELS.DELIVERY.MARK_DELIVERED, params);
+      if (!res.success) throw new Error(res.error?.message || 'Failed to update delivery status');
+      return res.data as DeliveryOrder;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['deliveries'] });
+      qc.invalidateQueries({ queryKey: ['delivery-stats'] });
+      qc.invalidateQueries({ queryKey: ['delivery-exceptions'] });
+    },
+  });
+}
+
 export function useReconcileDriverCOD() {
   const qc = useQueryClient();
   return useMutation({

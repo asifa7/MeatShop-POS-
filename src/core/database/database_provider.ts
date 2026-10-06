@@ -69,9 +69,22 @@ export class DatabaseProvider implements IDatabaseProvider {
     }
   }
 
+  public getDbPath(): string {
+    const config = this.configServiceInstance.get();
+    return config.dbPath || path.join(process.cwd(), 'dev.db');
+  }
+
+  public reopen(): Database.Database {
+    this.close();
+    return this.getRawConnection();
+  }
+
   public close() {
     if (this.dbInstance) {
       try {
+        try {
+          this.dbInstance.pragma('wal_checkpoint(TRUNCATE)');
+        } catch {}
         this.dbInstance.close();
         logger.info('Database connection closed.');
       } catch (err) {

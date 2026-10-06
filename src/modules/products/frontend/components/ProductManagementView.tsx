@@ -1,20 +1,23 @@
 import { useState, useMemo } from 'react';
 import {
   Plus, Package, Power, PowerOff, Edit2, Clock, AlertCircle,
-  RefreshCw, Search, FileSpreadsheet, Trash2, Eye, EyeOff
+  RefreshCw, Search, FileSpreadsheet, Trash2, Eye, EyeOff, Filter,
+  Archive
 } from 'lucide-react';
 import { useAdminProducts, useProductRateHistory } from '../hooks/useProducts';
 import { useSession } from '../../../auth/frontend/hooks/useAuth';
 import {
   useDeactivateProduct, useReactivateProduct, useDeleteProduct,
+  useDeactivateCategory, useReactivateCategory, useDeleteCategory,
 } from '../hooks/useProductMutations';
 import { formatPaise } from '../../../billing/frontend/types/billing.types';
 import { FIXED_CATEGORIES } from '../../types/products.types';
 import type { AdminProduct } from '../../types/products.types';
 import ProductForm from './ProductForm';
 import RateHistoryPanel from './RateHistoryPanel';
-import DeactivateConfirmDialog from './DeactivateConfirmDialog';
+import DeactivateConfirmDialog, { DeactivateTarget } from './DeactivateConfirmDialog';
 import BulkProductSheetModal from './BulkProductSheetModal';
+import DeletedProductsModal from './DeletedProductsModal';
 
 // ─── Rate History Modal Wrapper ────────────────────────────────────────────────
 function RateHistoryWrapper({ product, onClose }: { product: AdminProduct; onClose: () => void }) {
@@ -44,6 +47,9 @@ export default function ProductManagementView() {
   const deactivateProduct = useDeactivateProduct();
   const reactivateProduct = useReactivateProduct();
   const deleteProduct = useDeleteProduct();
+  const deactivateCategory = useDeactivateCategory();
+  const reactivateCategory = useReactivateCategory();
+  const deleteCategory = useDeleteCategory();
 
   // Search & Filter State
   const [searchTerm, setSearchTerm] = useState('');
@@ -55,7 +61,8 @@ export default function ProductManagementView() {
   const [editProduct, setEditProduct] = useState<AdminProduct | null>(null);
   const [showBulkSheet, setShowBulkSheet] = useState(false);
   const [historyProduct, setHistoryProduct] = useState<AdminProduct | null>(null);
-  const [deactivateTarget, setDeactivateTarget] = useState<{ type: 'product'; item: AdminProduct } | null>(null);
+  const [deactivateTarget, setDeactivateTarget] = useState<DeactivateTarget | null>(null);
+  const [showDeletedModal, setShowDeletedModal] = useState(false);
 
   const isAdmin = session?.role === 'ADMIN' || session?.role === 'MANAGER';
 
@@ -67,6 +74,24 @@ export default function ProductManagementView() {
     });
     return Array.from(set);
   }, [products]);
+
+  // Per-category counts & stats
+  const categoryStats = useMemo(() => {
+    const stats: Record<string, { total: number; active: number; inactive: number }> = {};
+    for (const cat of allCategories) {
+      stats[cat] = { total: 0, active: 0, inactive: 0 };
+    }
+    for (const p of products) {
+      const cat = p.category?.trim();
+      if (cat) {
+        if (!stats[cat]) stats[cat] = { total: 0, active: 0, inactive: 0 };
+        stats[cat].total += 1;
+        if (p.is_active === 1) stats[cat].active += 1;
+        else stats[cat].inactive += 1;
+      }
+    }
+    return stats;
+  }, [allCategories, products]);
 
   // Filtered Products (Flat List)
   const filteredProducts = useMemo(() => {
@@ -127,6 +152,14 @@ export default function ProductManagementView() {
         {isAdmin && (
           <div className="flex items-center gap-2.5">
             <button
+              onClick={() => setShowDeletedModal(true)}
+              className="px-3.5 py-2 rounded-xl border border-border-subtle bg-surface-card hover:bg-surface-app text-xs font-bold text-text-secondary hover:text-text-primary transition-all flex items-center gap-2 shadow-sm"
+              title="View audit archive of deleted products and restore them"
+            >
+              <Archive size={15} className="text-brand-500" />
+              <span>Deleted Items</span>
+            </button>
+            <button
               onClick={() => setShowBulkSheet(true)}
               className="px-4 py-2 rounded-xl border border-brand-500/30 bg-brand-500/10 text-xs font-bold text-brand-500 hover:bg-brand-500/20 hover:border-brand-500/50 transition-all flex items-center gap-2 shadow-sm"
             >
@@ -158,18 +191,6 @@ export default function ProductManagementView() {
               className="w-full bg-surface-app border border-border-subtle rounded-xl pl-9 pr-3 py-1.5 text-xs font-semibold text-text-primary placeholder-text-muted outline-none focus:border-brand-500"
             />
           </div>
-
-          {/* Category Dropdown */}
-          <select
-            value={selectedCategory}
-            onChange={e => setSelectedCategory(e.target.value)}
-            className="bg-surface-app border border-border-subtle rounded-xl px-3 py-1.5 text-xs font-bold text-text-secondary outline-none focus:border-brand-500"
-          >
-            <option value="ALL">All Categories</option>
-            {allCategories.map(cat => (
-              <option key={cat} value={cat}>{cat}</option>
-            ))}
-          </select>
         </div>
 
         {/* Show Inactive Toggle */}
@@ -187,6 +208,117 @@ export default function ProductManagementView() {
           </button>
         </div>
       </div>
+
+      {/* Category Pills Bar */}
+      <div className="px-6 py-2.5 bg-surface-panel border-b border-border-subtle flex items-center gap-2 overflow-x-auto no-scrollbar flex-shrink-0">
+        <span className="text-[11px] font-extrabold uppercase tracking-wider text-text-muted flex items-center gap-1.5 mr-1 shrink-0">
+          <Filter size={13} /> Categories:
+        </span>
+
+        <button
+          onClick={() => setSelectedCategory('ALL')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all shrink-0 flex items-center gap-2 border ${
+            selectedCategory === 'ALL'
+              ? 'bg-brand-500 border-brand-500 text-white shadow-sm'
+              : 'bg-surface-card border-border-subtle text-text-secondary hover:text-text-primary hover:border-brand-500/40'
+          }`}
+        >
+          <span>All Products</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${
+            selectedCategory === 'ALL' ? 'bg-black/25 text-white' : 'bg-surface-app text-text-muted'
+          }`}>
+            {totalProducts}
+          </span>
+        </button>
+
+        {allCategories.map(cat => {
+          const isSel = selectedCategory.toLowerCase() === cat.toLowerCase();
+          const count = categoryStats[cat]?.total || 0;
+          return (
+            <button
+              key={cat}
+              onClick={() => setSelectedCategory(cat)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all shrink-0 flex items-center gap-2 border ${
+                isSel
+                  ? 'bg-brand-500 border-brand-500 text-white shadow-sm'
+                  : 'bg-surface-card border-border-subtle text-text-secondary hover:text-text-primary hover:border-brand-500/40'
+              }`}
+            >
+              <span>{cat}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-bold ${
+                isSel ? 'bg-black/25 text-white' : 'bg-surface-app text-text-muted'
+              }`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Category Action Bar (When a specific category is selected) */}
+      {selectedCategory !== 'ALL' && (
+        <div className="px-6 py-2.5 bg-surface-card/70 border-b border-border-subtle flex flex-wrap items-center justify-between gap-3 flex-shrink-0 animate-in fade-in duration-150">
+          <div className="flex items-center gap-2.5">
+            <div className="w-2 h-2 rounded-full bg-brand-500" />
+            <span className="text-xs font-extrabold text-text-primary">
+              Category: <span className="text-brand-500">{selectedCategory}</span>
+            </span>
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-surface-panel border border-border-subtle text-text-secondary">
+              {categoryStats[selectedCategory]?.total || 0} products
+            </span>
+            <span className="text-[11px] font-semibold text-text-muted">
+              ({categoryStats[selectedCategory]?.active || 0} active, {categoryStats[selectedCategory]?.inactive || 0} inactive)
+            </span>
+          </div>
+
+          {isAdmin && (
+            <div className="flex items-center gap-2">
+              {(categoryStats[selectedCategory]?.inactive || 0) > 0 && (
+                <button
+                  onClick={() => reactivateCategory.mutate(selectedCategory)}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 text-xs font-bold transition-all flex items-center gap-1.5"
+                  title={`Reactivate all products in ${selectedCategory}`}
+                >
+                  <Power size={13} />
+                  <span>Reactivate Category</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  setDeactivateTarget({
+                    type: 'category',
+                    category: selectedCategory,
+                    count: categoryStats[selectedCategory]?.total || 0,
+                    activeCount: categoryStats[selectedCategory]?.active || 0,
+                  });
+                }}
+                className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 text-xs font-bold transition-all flex items-center gap-1.5"
+                title={`Deactivate all products in ${selectedCategory}`}
+              >
+                <PowerOff size={13} />
+                <span>Deactivate Category</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setDeactivateTarget({
+                    type: 'category',
+                    category: selectedCategory,
+                    count: categoryStats[selectedCategory]?.total || 0,
+                    activeCount: categoryStats[selectedCategory]?.active || 0,
+                  });
+                }}
+                className="px-3 py-1.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20 text-xs font-bold transition-all flex items-center gap-1.5"
+                title={`Permanently delete all products in ${selectedCategory}`}
+              >
+                <Trash2 size={13} />
+                <span>Delete Category Permanently</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Main Flat Product Table View */}
       <div className="flex-1 overflow-y-auto p-6">
@@ -416,11 +548,20 @@ export default function ProductManagementView() {
         target={deactivateTarget}
         onDeactivate={async () => {
           if (!deactivateTarget) return;
-          await deactivateProduct.mutateAsync(deactivateTarget.item.id);
+          if (deactivateTarget.type === 'category') {
+            await deactivateCategory.mutateAsync(deactivateTarget.category);
+          } else if (deactivateTarget.type === 'product') {
+            await deactivateProduct.mutateAsync(deactivateTarget.item.id);
+          }
         }}
         onHardDelete={async () => {
           if (!deactivateTarget) return;
-          await deleteProduct.mutateAsync(deactivateTarget.item.id);
+          if (deactivateTarget.type === 'category') {
+            await deleteCategory.mutateAsync(deactivateTarget.category);
+            setSelectedCategory('ALL');
+          } else if (deactivateTarget.type === 'product') {
+            await deleteProduct.mutateAsync(deactivateTarget.item.id);
+          }
         }}
       />
 
@@ -429,6 +570,15 @@ export default function ProductManagementView() {
         isOpen={showBulkSheet}
         onClose={() => {
           setShowBulkSheet(false);
+          refetch();
+        }}
+      />
+
+      {/* Deleted Products Archive Modal */}
+      <DeletedProductsModal
+        isOpen={showDeletedModal}
+        onClose={() => {
+          setShowDeletedModal(false);
           refetch();
         }}
       />

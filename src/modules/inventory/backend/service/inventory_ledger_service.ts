@@ -239,9 +239,10 @@ export class InventoryLedgerService {
           UPDATE product_variants SET
             last_purchase_cost = ?,
             unit_cost_paise_cache = ?,
+            last_purchase_cost_paise = ?,
             cost_price_paise_per_unit = CASE WHEN cost_price_paise_per_unit <= 0 THEN ? ELSE cost_price_paise_per_unit END
           WHERE id = ?
-        `).run(unitCostPaise, unitCostPaise, unitCostPaise, variantId);
+        `).run(unitCostPaise, unitCostPaise, unitCostPaise, unitCostPaise, variantId);
       } catch (e: any) {
         logger.warn(`Batch creation notice for variant #${variantId}: ${e.message}`);
       }
@@ -415,6 +416,7 @@ export class InventoryLedgerService {
           (SELECT unit_cost_paise FROM product_stock_batches WHERE product_variant_id = pv.id AND status = 'active' ORDER BY received_date DESC, id DESC LIMIT 1),
           pv.last_purchase_cost_paise,
           pv.unit_cost_paise_cache,
+          pv.last_purchase_cost,
           pv.cost_price_paise_per_unit,
           pv.current_rate_paise_per_unit,
           0

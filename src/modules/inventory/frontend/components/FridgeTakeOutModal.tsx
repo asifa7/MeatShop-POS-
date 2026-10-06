@@ -10,7 +10,7 @@ interface FridgeTakeOutModalProps {
 
 export default function FridgeTakeOutModal({ item, onClose, onSuccess }: FridgeTakeOutModalProps) {
   const [quantity, setQuantity] = useState<string>('');
-  const [reason, setReason] = useState<string>('Moved to Kitchen Prep');
+  const [reason, setReason] = useState<string>('Moved back to regular stock');
   const [customReason, setCustomReason] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
@@ -37,13 +37,21 @@ export default function FridgeTakeOutModal({ item, onClose, onSuccess }: FridgeT
 
     const finalReason = reason === 'Other' ? customReason.trim() || 'Manual Removal' : reason;
 
+    let removalType: 'transfer' | 'sold' | 'wastage' | 'staff' = 'transfer';
+    if (reason === 'Moved back to regular stock') removalType = 'transfer';
+    else if (reason === 'Direct Counter Sale') removalType = 'sold';
+    else if (reason === 'Staff Use') removalType = 'staff';
+    else if (reason === 'Wastage / Spoilage') removalType = 'wastage';
+    else removalType = 'wastage';
+
     try {
       const res: any = await removeMutation.mutateAsync({
-        batch_id: item.oldest_batch_id || item.batch_id || undefined,
+        batch_id: item.id || item.oldest_batch_id || item.batch_id || undefined,
         product_variant_id: item.product_variant_id,
         quantity: qtyNum,
         unit_type: item.unit_type,
         reason: finalReason,
+        removal_type: removalType,
       });
 
       if (shouldPrint && res?.slip && onSuccess) {
@@ -128,10 +136,10 @@ export default function FridgeTakeOutModal({ item, onClose, onSuccess }: FridgeT
               onChange={e => setReason(e.target.value)}
               className="w-full bg-surface-panel border border-border-subtle rounded-xl px-3 py-2 text-xs text-text-primary outline-none focus:border-brand-500 mb-2 cursor-pointer"
             >
-              <option value="Moved to Kitchen Prep">Moved to Kitchen Prep</option>
-              <option value="Direct Counter Sale">Direct Counter Sale</option>
-              <option value="Transferred to Processing">Transferred to Processing</option>
+              <option value="Moved back to regular stock">Moved back to regular stock (Adds back to regular inventory)</option>
+              <option value="Direct Counter Sale">Direct Counter Sale (Sold)</option>
               <option value="Wastage / Spoilage">Wastage / Spoilage</option>
+              <option value="Staff Use">Staff Use / Employee Meal</option>
               <option value="Other">Other (Custom Reason)</option>
             </select>
 

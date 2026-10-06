@@ -28,9 +28,11 @@ import {
   Drumstick,
   Activity,
   Truck,
+  MessageSquare,
 } from 'lucide-react';
 import { IPC_CHANNELS } from './core/ipc/channels';
 import { AppConfig } from './core/shared/types';
+import { WhatsAppToastManager } from './modules/whatsapp/frontend/components/WhatsAppToastManager';
 
 import ProductGrid from './modules/billing/frontend/components/ProductGrid';
 import ProductQuickSearch from './modules/billing/frontend/components/ProductQuickSearch';
@@ -44,6 +46,7 @@ import UpiCustomerPromptModal from './modules/billing/frontend/components/UpiCus
 import { useLowStockAlerts, useOversoldRecords } from './modules/inventory/frontend/hooks/useInventory';
 import CustomerSearch from './modules/customers/frontend/components/CustomerSearch';
 import ReprintLookupModal from './modules/billing/frontend/components/ReprintLookupModal';
+import RefrigeratorItemPickerModal from './modules/billing/frontend/components/RefrigeratorItemPickerModal';
 import CustomerOutstandingHistoryPanel from './modules/billing/frontend/components/CustomerOutstandingHistoryPanel';
 import { useCustomer, useCustomerIntelligence } from './modules/customers/frontend/hooks/useCustomers';
 import type { Customer } from './modules/customers/frontend/types/customer.types';
@@ -53,6 +56,7 @@ import { Key, AlertTriangle, Edit3, Trash2, CheckCircle2, Palette, Zap, Sparkles
 import { useSession, useLogout } from './modules/auth/frontend/hooks/useAuth';
 import LoginScreen from './modules/auth/frontend/components/LoginScreen';
 import { useCart } from './modules/billing/frontend/hooks/useCart';
+import { useActiveRates } from './modules/billing/frontend/hooks/useActiveRates';
 import DailyCashierPromptModal from './modules/inventory/frontend/components/DailyCashierPromptModal';
 import { useHeldBills } from './modules/billing/frontend/hooks/useHeldBills';
 import type { ProductVariant, InvoiceDetail } from './modules/billing/frontend/types/billing.types';
@@ -73,13 +77,14 @@ import DailyMarketPricesView from './modules/pricing/frontend/components/DailyMa
 import EnterpriseLedgerView from './modules/ledger/frontend/components/EnterpriseLedgerView';
 import SystemHealthView from './modules/system/frontend/components/SystemHealthView';
 import DemandForecastingView from './modules/inventory/frontend/components/DemandForecastingView';
-import MeatProcessingYieldView from './modules/production/frontend/components/MeatProcessingYieldView';
 import PaymentsReceiptsView from './modules/ledger/frontend/components/PaymentsReceiptsView';
 import DeliveryManagementView from './modules/delivery/frontend/components/DeliveryManagementView';
 import DeliveryOrderModal from './modules/delivery/frontend/components/DeliveryOrderModal';
+import { HomeDeliveryPromptModal } from './modules/delivery/frontend/components/HomeDeliveryPromptModal';
+import { useDeliveries } from './modules/delivery/frontend/hooks/useDelivery';
 import type { CreateDeliveryInput } from './modules/delivery/types/delivery.types';
 
-type Page = 'billing' | 'inventory' | 'purchases' | 'payments' | 'delivery' | 'products' | 'reports' | 'settings' | 'help' | 'customers' | 'ar_reports' | 'hr' | 'cashbox' | 'expenses' | 'prices' | 'ledgers' | 'yield' | 'health' | 'forecasting';
+type Page = 'billing' | 'inventory' | 'purchases' | 'payments' | 'delivery' | 'products' | 'reports' | 'settings' | 'help' | 'customers' | 'ar_reports' | 'hr' | 'cashbox' | 'expenses' | 'prices' | 'ledgers' | 'health' | 'forecasting';
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar({ activePage, onNavigate, theme, onToggleTheme }: {
@@ -96,6 +101,12 @@ function Sidebar({ activePage, onNavigate, theme, onToggleTheme }: {
   const lowStockBadgeCount = lowStockAlerts?.length || 0;
   const { data: oversoldRecords } = useOversoldRecords();
   const unreviewedOversoldCount = (oversoldRecords || []).length;
+  const { data: deliveries } = useDeliveries();
+  const pendingDeliveryCount = (deliveries || []).filter(d => {
+    const isDelivered = Boolean(d.delivered === 1 || d.status === 'delivered');
+    const isPaid = Boolean(d.payment_received === 1 || d.payment_status === 'paid');
+    return !(isDelivered && isPaid);
+  }).length;
   return (
     <aside className="w-48 bg-surface-panel text-text-primary flex flex-col justify-between border-r border-border-subtle h-full max-h-screen flex-shrink-0 select-none overflow-hidden">
       <div className="flex flex-col flex-1 min-h-0 overflow-y-auto">
@@ -155,7 +166,12 @@ function Sidebar({ activePage, onNavigate, theme, onToggleTheme }: {
             }`}
           >
             <Truck size={15} className="shrink-0" />
-            <span className="flex-1 text-left truncate">Delivery & Dispatch</span>
+            <span className="flex-1 text-left truncate">Delivery</span>
+            {pendingDeliveryCount > 0 && (
+              <span className="bg-amber-500 text-white text-[9px] font-bold px-1.5 py-0.2 rounded-full shadow-sm">
+                {pendingDeliveryCount}
+              </span>
+            )}
           </button>
 
           <button
@@ -291,17 +307,7 @@ function Sidebar({ activePage, onNavigate, theme, onToggleTheme }: {
             <span className="flex-1 text-left truncate">Daily Ledgers</span>
           </button>
 
-          <button
-            onClick={() => onNavigate('yield')}
-            className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 whitespace-nowrap ${
-              activePage === 'yield'
-                ? 'bg-brand-500 text-white shadow-subtle'
-                : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
-            }`}
-          >
-            <Drumstick size={15} className="shrink-0" />
-            <span className="flex-1 text-left truncate">Yield Batch</span>
-          </button>
+
 
           <button
             onClick={() => onNavigate('health')}
@@ -409,7 +415,7 @@ function Statusbar({ dbHealth, sysInfo }: { dbHealth: any; sysInfo: any }) {
     return () => clearInterval(timer);
   }, []);
 
-  const isConnected = dbHealth?.status === 'OK';
+  const isConnected = dbHealth?.status === 'healthy' || dbHealth?.status === 'OK' || dbHealth?.active === true;
 
   return (
     <footer className="h-8 bg-surface-panel border-t border-border-subtle px-4 flex items-center justify-between text-[11px] text-text-secondary font-medium select-none flex-shrink-0">
@@ -462,6 +468,7 @@ function BillingView() {
   const [showPaymentPanel, setShowPaymentPanel] = useState(false);
   const [showHeldBills, setShowHeldBills] = useState(false);
   const [showOverrideDialog, setShowOverrideDialog] = useState(false);
+  const [showFridgePicker, setShowFridgePicker] = useState(false);
 
   const [weightEntryMeta, setWeightEntryMeta] = useState({ itemId: 0, variantName: '', ratePaise: 0, isNewItem: false, variantId: 0 });
   const [overrideMeta] = useState({ variantId: 0, variantName: '', currentRatePaise: 0, quantityGrams: 0, quantityUnits: 0, unitType: 'weight' as 'weight' | 'piece' });
@@ -498,6 +505,7 @@ function BillingView() {
   const customerId = cart.activeInvoice?.customer_id ?? null;
   const { data: customer } = useCustomer(customerId);
   const { data: customerIntelligence } = useCustomerIntelligence(customerId);
+  const { data: activeVariants } = useActiveRates();
 
   const focusEnterBillBar = useCallback(() => {
     const doFocus = () => {
@@ -511,6 +519,23 @@ function BillingView() {
     setTimeout(doFocus, 50);
     setTimeout(doFocus, 150);
   }, []);
+
+  const refreshLastCompleted = useCallback(async () => {
+    try {
+      const res = await window.api.invoke(IPC_CHANNELS.BILLING.GET_LAST_COMPLETED);
+      if (res && res.success && res.data) {
+        setLastCompletedInvoice(res.data);
+      }
+    } catch (e) {
+      console.error('Failed to load last completed invoice:', e);
+    }
+  }, []);
+
+  // Initialize or restore active draft on mount & fetch last completed bill directly from database
+  useEffect(() => {
+    cart.initActiveDraft();
+    refreshLastCompleted();
+  }, [refreshLastCompleted]);
 
   // Auto-focus Enter Bill Bar on initial mount / navigation to billing
   useEffect(() => {
@@ -695,7 +720,7 @@ function BillingView() {
   const handleOverrideConfirm = async (newRatePaise: number, reason: string) => {
     await cart.addItem({
       product_variant_id: overrideMeta.variantId,
-      quantity_grams: overrideMeta.unitType === 'weight' ? overrideMeta.quantityGrams : null,
+      quantity_grams: (overrideMeta.unitType === 'weight' || (overrideMeta.unitType as any) === 'live_dual') ? overrideMeta.quantityGrams : null,
       quantity_units: overrideMeta.unitType === 'piece' ? overrideMeta.quantityUnits : null,
       override_rate_paise: newRatePaise,
       override_reason: reason,
@@ -747,8 +772,9 @@ function BillingView() {
   const [deliveryConfig, setDeliveryConfig] = useState<CreateDeliveryInput | null>(null);
   const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [flowBDeliveryInvoice, setFlowBDeliveryInvoice] = useState<InvoiceDetail | null>(null);
+  const [pendingHomeDeliveryInvoice, setPendingHomeDeliveryInvoice] = useState<InvoiceDetail | null>(null);
 
-  const handleSaleComplete = (invoice: InvoiceDetail) => {
+  const handleSaleComplete = (invoice: InvoiceDetail, printType: 'both' | 'normal' | 'token' | 'none' = 'normal') => {
     // 1. Instant Synchronous UI State Reset (0ms)
     setLastCompletedInvoice(invoice);
     setShowPaymentPanel(false);
@@ -760,29 +786,63 @@ function BillingView() {
     setToastMessage(`Bill ${invNo} completed`);
     setTimeout(() => setToastMessage(null), 1500);
 
-    // Flow A: If this was marked as a Delivery Order, create delivery order record
-    if (isDeliveryOrder && invoice.invoice.id) {
-      const custName = customer?.name || deliveryConfig?.customer_name || 'Walk-in Customer';
-      const custPhone = customer?.phone || customer?.phone2 || deliveryConfig?.customer_phone || '';
-      const deliveryAddress = deliveryConfig?.delivery_address_snapshot || customer?.shipping_address_line1 || customer?.billing_address_line1 || 'Counter Delivery Order';
+    console.log('[DELIVERY-CHECK]', 'isDeliveryOrder at complete time:', isDeliveryOrder, 'invoice.id:', invoice?.invoice?.id);
 
-      window.api.invoke(IPC_CHANNELS.DELIVERY.CREATE, {
-        customer_id: customer?.id || null,
-        customer_name: custName,
-        customer_phone: custPhone,
-        delivery_address_snapshot: deliveryAddress,
-        delivery_notes: deliveryConfig?.delivery_notes || null,
-        assigned_staff_id: deliveryConfig?.assigned_staff_id || null,
-        scheduled_slot: deliveryConfig?.scheduled_slot || null,
-        delivery_charge_paise: deliveryConfig?.delivery_charge_paise || 0,
-        subtotal_paise: invoice.invoice.subtotal_paise,
-        total_paise: invoice.invoice.total_paise,
-        invoice_id: invoice.invoice.id,
-        invoice_number: invoice.invoice.invoice_number,
-      }).catch((e: any) => {
-        console.error('Failed to create delivery record:', e);
-      });
-      setIsDeliveryOrder(false);
+    // Flow A: If this was marked as Home Delivery
+    if (isDeliveryOrder && invoice.invoice.id) {
+      let activeCustomer = customer;
+      if (!activeCustomer && invoice.invoice.customer_id) {
+        activeCustomer = queryClient.getQueryData(['customer', invoice.invoice.customer_id]) as any;
+      }
+      const custName = (activeCustomer?.name || '').trim();
+      const isWalkIn = !custName || custName.toLowerCase() === 'walk-in' || custName.toLowerCase() === 'walk-in customer';
+      const validName = isWalkIn ? '' : custName;
+      const custPhone = (activeCustomer?.whatsapp || activeCustomer?.phone || activeCustomer?.phone2 || '').trim();
+
+      if (validName && custPhone) {
+        // Customer name + mobile already present on the bill: create delivery ticket automatically, zero popup!
+        const deliveryAddress = activeCustomer?.shipping_address_line1 || activeCustomer?.billing_address_line1 || '';
+        const deliveryPayload = {
+          invoice_id: invoice.invoice.id,
+          invoice_number: invoice.invoice.invoice_number,
+          customer_id: activeCustomer?.id || null,
+          customer_name: validName,
+          customer_phone: custPhone,
+          delivery_address_snapshot: deliveryAddress,
+          payment_method: invoice.payments[0]?.method || paymentMethod || 'cash',
+          subtotal_paise: invoice.invoice.subtotal_paise,
+          total_paise: invoice.invoice.total_paise,
+        };
+        console.log('[DELIVERY-IPC-CALL]', 'Sending delivery:create payload:', JSON.stringify(deliveryPayload));
+        window.api.invoke(IPC_CHANNELS.DELIVERY.CREATE, deliveryPayload).then((res: any) => {
+          console.log('[DELIVERY-IPC-RESULT]', 'Auto-create res:', JSON.stringify(res));
+          if (!res?.success) {
+            console.error('Failed to auto-create delivery record:', res?.error);
+            setToastMessage(`Delivery ticket error: ${res?.error?.message || 'Failed'}`);
+          } else {
+            queryClient.invalidateQueries({ queryKey: ['deliveries'] });
+            setToastMessage(`✓ Delivery ticket created for Bill ${invNo}`);
+            setTimeout(() => setToastMessage(null), 2500);
+
+            // Automatically print delivery ticket
+            window.api.invoke('billing:print-receipt', {
+              invoice_id: invoice.invoice.id,
+              printType: 'token',
+              isInitialPrint: true,
+            }).catch(pErr => {
+              console.warn('Background delivery ticket print skipped/failed:', pErr);
+            });
+          }
+        }).catch((e: any) => {
+          console.error('Failed to auto-create delivery record:', e);
+        });
+        setIsDeliveryOrder(false);
+      } else {
+        // Missing name or phone: show popup "Enter customer name + mobile for delivery"
+        console.log('[DELIVERY-CHECK]', 'Customer name or phone missing, setting pendingHomeDeliveryInvoice. Name:', validName, 'Phone:', custPhone);
+        setPendingHomeDeliveryInvoice(invoice);
+        setIsDeliveryOrder(false);
+      }
       setDeliveryConfig(null);
     }
 
@@ -795,9 +855,24 @@ function BillingView() {
     }
 
     // 3. Background Asynchronous Printing (zero UI blocking)
-    window.api.invoke('billing:print-receipt', { invoice_id: invoice.invoice.id }).catch(e => {
-      console.warn('Background receipt print warning:', e);
-    });
+    if (printType !== 'none') {
+      window.api.invoke('billing:print-receipt', { invoice_id: invoice.invoice.id, printType, isInitialPrint: true }).catch(e => {
+        console.warn('Background receipt print warning:', e);
+      });
+    }
+
+    // 3b. Automatic Background WhatsApp Dispatch (Option B)
+    // If customer has a mobile number attached, dispatch silently in background with 0 clicks.
+    // If no mobile number is attached, skip silently (no error, no modal, no disturbance).
+    const targetCustomerPhone = customer?.whatsapp || customer?.phone || customer?.phone2 || '';
+    if (targetCustomerPhone && targetCustomerPhone.trim()) {
+      window.api.invoke(IPC_CHANNELS.BILLING.SEND_WHATSAPP_BILL, {
+        invoice_id: invoice.invoice.id,
+        customPhone: targetCustomerPhone.trim(),
+      }).catch(waErr => {
+        console.warn('Background WhatsApp bill dispatch skipped/failed:', waErr);
+      });
+    }
 
     // 4. Background Fresh Draft Initialization & Cache Invalidation
     cart.createDraft().then(() => {
@@ -816,13 +891,16 @@ function BillingView() {
   const handleFlowBDeliveryConfirm = async (config: CreateDeliveryInput) => {
     if (!flowBDeliveryInvoice) return;
     try {
-      await window.api.invoke(IPC_CHANNELS.DELIVERY.CREATE, {
+      const res = await window.api.invoke(IPC_CHANNELS.DELIVERY.CREATE, {
         ...config,
         invoice_id: flowBDeliveryInvoice.invoice.id,
         invoice_number: flowBDeliveryInvoice.invoice.invoice_number,
         subtotal_paise: flowBDeliveryInvoice.invoice.subtotal_paise,
         total_paise: flowBDeliveryInvoice.invoice.total_paise,
       });
+      if (res && !res.success) {
+        throw new Error(res.error?.message || 'Failed to dispatch delivery');
+      }
       setToastMessage(`Bill #${flowBDeliveryInvoice.invoice.invoice_number?.split('_')[0] || flowBDeliveryInvoice.invoice.id} dispatched for Delivery`);
       setTimeout(() => setToastMessage(null), 2500);
       setFlowBDeliveryInvoice(null);
@@ -831,8 +909,107 @@ function BillingView() {
     }
   };
 
+  const handleSaveHomeDeliveryTicket = async (details: { customerName: string; customerPhone: string; address: string }) => {
+    if (!pendingHomeDeliveryInvoice) return;
+    try {
+      const ticketPayload = {
+        invoice_id: pendingHomeDeliveryInvoice.invoice.id,
+        invoice_number: pendingHomeDeliveryInvoice.invoice.invoice_number,
+        customer_id: customer?.id || pendingHomeDeliveryInvoice.invoice.customer_id || null,
+        customer_name: details.customerName,
+        customer_phone: details.customerPhone,
+        delivery_address_snapshot: details.address,
+        payment_method: pendingHomeDeliveryInvoice.payments[0]?.method || paymentMethod || 'cash',
+        subtotal_paise: pendingHomeDeliveryInvoice.invoice.subtotal_paise,
+        total_paise: pendingHomeDeliveryInvoice.invoice.total_paise,
+      };
+      console.log('[DELIVERY-IPC-CALL]', 'handleSaveHomeDeliveryTicket payload:', JSON.stringify(ticketPayload));
+      const res = await window.api.invoke(IPC_CHANNELS.DELIVERY.CREATE, ticketPayload);
+      console.log('[DELIVERY-IPC-RESULT]', 'handleSaveHomeDeliveryTicket res:', JSON.stringify(res));
+      if (res && !res.success) {
+        throw new Error(res.error?.message || 'Failed to create delivery ticket');
+      }
+      queryClient.invalidateQueries({ queryKey: ['deliveries'] });
+
+      // Automatically dispatch WhatsApp bill if phone was provided
+      if (details.customerPhone && details.customerPhone.trim()) {
+        window.api.invoke(IPC_CHANNELS.BILLING.SEND_WHATSAPP_BILL, {
+          invoice_id: pendingHomeDeliveryInvoice.invoice.id,
+          customPhone: details.customerPhone.trim(),
+        }).catch(waErr => {
+          console.warn('Background WhatsApp delivery ticket dispatch skipped/failed:', waErr);
+        });
+      }
+
+      // Automatically print delivery token slip
+      window.api.invoke('billing:print-receipt', {
+        invoice_id: pendingHomeDeliveryInvoice.invoice.id,
+        printType: 'token',
+        isInitialPrint: true,
+      }).catch(pErr => {
+        console.warn('Background delivery token print skipped/failed:', pErr);
+      });
+
+      setToastMessage('Delivery ticket created');
+      setTimeout(() => setToastMessage(null), 1500);
+    } catch (e: any) {
+      console.error('Failed to create delivery ticket:', e);
+      alert(e.message || 'Failed to create delivery ticket');
+    } finally {
+      setPendingHomeDeliveryInvoice(null);
+    }
+  };
+
+  const handleSkipHomeDeliveryTicket = async () => {
+    if (!pendingHomeDeliveryInvoice) return;
+    try {
+      // Skip still creates the ticket, just without contact details (blank)
+      const skipPayload = {
+        invoice_id: pendingHomeDeliveryInvoice.invoice.id,
+        invoice_number: pendingHomeDeliveryInvoice.invoice.invoice_number,
+        customer_id: null,
+        customer_name: '',
+        customer_phone: '',
+        delivery_address_snapshot: '',
+        payment_method: pendingHomeDeliveryInvoice.payments[0]?.method || paymentMethod || 'cash',
+        subtotal_paise: pendingHomeDeliveryInvoice.invoice.subtotal_paise,
+        total_paise: pendingHomeDeliveryInvoice.invoice.total_paise,
+      };
+      console.log('[DELIVERY-IPC-CALL]', 'handleSkipHomeDeliveryTicket payload:', JSON.stringify(skipPayload));
+      const res = await window.api.invoke(IPC_CHANNELS.DELIVERY.CREATE, skipPayload);
+      console.log('[DELIVERY-IPC-RESULT]', 'handleSkipHomeDeliveryTicket res:', JSON.stringify(res));
+      if (res && !res.success) {
+        throw new Error(res.error?.message || 'Failed to create delivery ticket');
+      }
+      queryClient.invalidateQueries({ queryKey: ['deliveries'] });
+
+      // Automatically print delivery token slip
+      window.api.invoke('billing:print-receipt', {
+        invoice_id: pendingHomeDeliveryInvoice.invoice.id,
+        printType: 'token',
+        isInitialPrint: true,
+      }).catch(pErr => {
+        console.warn('Background delivery token print skipped/failed:', pErr);
+      });
+
+      setToastMessage('Delivery ticket created');
+      setTimeout(() => setToastMessage(null), 1500);
+    } catch (e: any) {
+      console.error('Failed to create delivery ticket:', e);
+      alert(e.message || 'Failed to create delivery ticket');
+    } finally {
+      setPendingHomeDeliveryInvoice(null);
+    }
+  };
+
   const handleComplete = async () => {
-    const result = await cart.completeInvoice();
+    console.log('[DELIVERY-CHECK-MODAL]', 'isDeliveryOrder in handleComplete:', isDeliveryOrder);
+    const completePayload = {
+      is_delivery: isDeliveryOrder,
+      delivery_charge_paise: isDeliveryOrder ? (deliveryConfig?.delivery_charge_paise || 0) : 0,
+    };
+    console.log('[MODAL-COMPLETE-INVOICE-PAYLOAD]', JSON.stringify(completePayload));
+    const result = await cart.completeInvoice(completePayload);
     setShowPaymentPanel(false);
     if (result) {
       handleSaleComplete(result);
@@ -872,6 +1049,7 @@ function BillingView() {
         }
 
         queryClient.invalidateQueries({ queryKey: ['billing', 'held'] });
+        await refreshLastCompleted();
         setTimeout(focusEnterBillBar, 50);
       } else {
         setEditError(reopenRes.error?.message || 'Failed to reopen invoice for editing');
@@ -892,10 +1070,7 @@ function BillingView() {
       if (res.success) {
         setShowVoidConfirmModal(false);
         setVoidReason('');
-        setLastCompletedInvoice((prev: InvoiceDetail | null) => prev ? {
-          ...prev,
-          invoice: { ...prev.invoice, status: 'void' as any }
-        } : null);
+        await refreshLastCompleted();
         queryClient.invalidateQueries({ queryKey: ['billing', 'held'] });
         setTimeout(focusEnterBillBar, 50);
       } else {
@@ -966,90 +1141,29 @@ function BillingView() {
                 </div>
               </div>
 
-              {/* 1-Click Usual Order Shortcut (Intelligence Payoff) */}
+              {/* Single Line Regular Items Shortcut with Marquee */}
               {customerIntelligence && customerIntelligence.typical_basket.length > 0 && (
-                <div className="flex items-center justify-between bg-brand-500/20 border border-brand-500/40 px-2.5 py-1.5 rounded-lg shadow-inner">
-                  <div className="flex items-center gap-1.5 text-[10px] text-brand-200 truncate min-w-0 pr-2">
-                    <Sparkles size={13} className="text-amber-400 flex-shrink-0 animate-pulse" />
-                    <span className="truncate">
-                      <strong className="text-white">{customer.name.split(' ')[0]}'s usual:</strong> {customerIntelligence.typical_basket_summary}
-                    </span>
+                <div className="flex items-center justify-between gap-2 bg-brand-500/10 border border-brand-500/30 px-2 py-1 rounded-md overflow-hidden">
+                  <div className="flex items-center gap-1.5 flex-1 min-w-0 overflow-hidden text-[10px]">
+                    <Sparkles size={11} className="text-amber-400 shrink-0" />
+                    <span className="font-bold text-brand-300 shrink-0">Regular:</span>
+                    <div className="overflow-hidden whitespace-nowrap flex-1">
+                      <div className="inline-block animate-marquee whitespace-nowrap text-text-primary font-medium">
+                        {customerIntelligence.typical_basket_summary}
+                      </div>
+                    </div>
                   </div>
                   <button
                     type="button"
                     onClick={handleAddUsualOrder}
-                    className="px-2.5 py-1 bg-brand-500 hover:bg-brand-400 active:scale-95 text-white rounded-md text-[10px] font-bold flex-shrink-0 flex items-center gap-1 transition-all shadow-subtle"
-                    title="Quickly add their usual items to bill"
+                    className="px-2 py-0.5 bg-brand-500 hover:bg-brand-400 text-white rounded text-[10px] font-bold shrink-0 flex items-center gap-1 transition-all shadow-xs cursor-pointer"
+                    title="Add regular items to bill"
                   >
-                    <Plus size={12} />
+                    <Plus size={10} />
                     <span>Add Usual</span>
                   </button>
                 </div>
               )}
-
-              {/* Preferences Pill Line */}
-              {(customer.preferred_cut || customer.skin_preference || customer.cutting_preference || customer.typical_quantity || customer.packaging_preference) && (
-                <div className="flex items-center gap-1 flex-wrap text-[10px] text-brand-200">
-                  <span className="font-bold text-brand-400 text-[9px]">🔪 Pref:</span>
-                  {customer.preferred_cut && (
-                    <span className="bg-surface-app/80 px-1.5 py-0.5 rounded border border-border-subtle text-[9px]">
-                      {customer.preferred_cut}
-                    </span>
-                  )}
-                  {customer.skin_preference && (
-                    <span className="bg-surface-app/80 px-1.5 py-0.5 rounded border border-border-subtle text-[9px]">
-                      {customer.skin_preference}
-                    </span>
-                  )}
-                  {customer.cutting_preference && (
-                    <span className="bg-surface-app/80 px-1.5 py-0.5 rounded border border-border-subtle text-[9px]">
-                      {customer.cutting_preference}
-                    </span>
-                  )}
-                  {customer.typical_quantity && (
-                    <span className="bg-surface-app/80 px-1.5 py-0.5 rounded border border-border-subtle text-[9px]">
-                      ~{customer.typical_quantity}
-                    </span>
-                  )}
-                  {customer.packaging_preference && (
-                    <span className="bg-surface-app/80 px-1.5 py-0.5 rounded border border-border-subtle text-[9px]">
-                      📦 {customer.packaging_preference}
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {customer.special_instructions && (
-                <p className="text-[10px] text-amber-300 font-medium bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
-                  ⚠️ {customer.special_instructions}
-                </p>
-              )}
-
-              {/* Delivery Order Toggle (Flow A) */}
-              <div className="flex items-center justify-between pt-1.5 border-t border-border-subtle/50">
-                <label className="flex items-center gap-1.5 cursor-pointer text-[10px] font-bold text-brand-400">
-                  <input
-                    type="checkbox"
-                    checked={isDeliveryOrder}
-                    onChange={e => {
-                      setIsDeliveryOrder(e.target.checked);
-                      if (e.target.checked) setShowDeliveryModal(true);
-                      else setDeliveryConfig(null);
-                    }}
-                    className="rounded accent-brand-500 cursor-pointer"
-                  />
-                  <span>🚚 Send as Home Delivery</span>
-                </label>
-                {isDeliveryOrder && (
-                  <button
-                    type="button"
-                    onClick={() => setShowDeliveryModal(true)}
-                    className="text-[10px] text-brand-300 font-bold hover:underline bg-brand-500/20 px-2 py-0.5 rounded border border-brand-500/30"
-                  >
-                    {deliveryConfig ? `Fee: ₹${((deliveryConfig.delivery_charge_paise || 0) / 100).toFixed(0)} (Edit)` : 'Set Address & Slot'}
-                  </button>
-                )}
-              </div>
             </div>
           )}
         </div>
@@ -1074,7 +1188,20 @@ function BillingView() {
             skipPaymentConfirmation={configQuery.data?.billingSettings?.skipPaymentConfirmation ?? false}
             defaultPaymentMethod={configQuery.data?.billingSettings?.defaultPaymentMethod ?? 'cash'}
             deliveryChargePaise={isDeliveryOrder ? (deliveryConfig?.delivery_charge_paise || 0) : 0}
-            onOpenDeliveryModal={() => setShowDeliveryModal(true)}
+            onOpenDeliveryModal={() => {
+              console.log('[APP-DELIVERY-TOGGLE]', 'before:', isDeliveryOrder);
+              setIsDeliveryOrder(prev => {
+                console.log('[APP-DELIVERY-TOGGLE]', 'transitioning to:', !prev);
+                return !prev;
+              });
+            }}
+            onToggleDelivery={() => {
+              console.log('[APP-DELIVERY-TOGGLE]', 'before:', isDeliveryOrder);
+              setIsDeliveryOrder(prev => {
+                console.log('[APP-DELIVERY-TOGGLE]', 'transitioning to:', !prev);
+                return !prev;
+              });
+            }}
             isDeliveryOrder={isDeliveryOrder}
           />
         </div>
@@ -1102,6 +1229,7 @@ function BillingView() {
             selectedVariant={selectedVariant}
             searchTerm={catalogSearchTerm}
             onSearchTermChange={setCatalogSearchTerm}
+            onOpenFridgePicker={() => setShowFridgePicker(true)}
           />
         </div>
 
@@ -1137,7 +1265,7 @@ function BillingView() {
               </div>
 
               {/* Bill Metadata Grid */}
-              <div className="grid grid-cols-2 gap-2 text-[10px] bg-surface-card p-2 rounded-lg border border-border-subtle/50">
+              <div className="grid grid-cols-3 gap-2 text-[10px] bg-surface-card p-2 rounded-lg border border-border-subtle/50">
                 <div>
                   <span className="text-text-muted block text-[8px] uppercase font-bold">Date & Time</span>
                   <span className="font-mono text-text-primary font-semibold">
@@ -1160,6 +1288,16 @@ function BillingView() {
                     {lastCompletedInvoice.invoice.customer_id ? `Customer #${lastCompletedInvoice.invoice.customer_id}` : 'Walk-in'}
                   </span>
                 </div>
+                <div>
+                  <span className="text-text-muted block text-[8px] uppercase font-bold">Order Type</span>
+                  {(lastCompletedInvoice.invoice as any).is_delivery ? (
+                    <span className="font-extrabold text-brand-500 flex items-center gap-1">
+                      <Truck size={11} /> Home Delivery
+                    </span>
+                  ) : (
+                    <span className="font-semibold text-text-secondary">Walk-in</span>
+                  )}
+                </div>
               </div>
 
               {/* Detailed Item List */}
@@ -1176,25 +1314,30 @@ function BillingView() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border-subtle/50 font-mono text-[10px]">
-                      {lastCompletedInvoice.items.map(item => (
-                        <tr key={item.id} className="hover:bg-surface-hover/50">
-                          <td className="px-2 py-1 font-sans font-extrabold text-text-primary text-[10px]">
-                            {item.product_name}
-                            {item.variant_name && item.variant_name !== 'Default' && (
-                              <span className="text-[8px] font-normal text-text-muted block">({item.variant_name})</span>
-                            )}
-                          </td>
-                          <td className="px-1.5 py-1 text-center text-text-secondary font-bold">
-                            {item.quantity_grams ? `${(item.quantity_grams / 1000).toFixed(3)} kg` : `${item.quantity_units} pc`}
-                          </td>
-                          <td className="px-1.5 py-1 text-right text-text-secondary">
-                            ₹{(item.rate_paise_snapshot / 100).toFixed(2)}
-                          </td>
-                          <td className="px-2 py-1 text-right font-extrabold text-brand-500">
-                            ₹{(item.line_total_paise / 100).toFixed(2)}
-                          </td>
-                        </tr>
-                      ))}
+                      {lastCompletedInvoice.items.map(item => {
+                        const matched = activeVariants?.find(v => v.id === item.product_variant_id);
+                        const prodName = item.product_name || matched?.product_name || 'Product';
+                        const varName = item.variant_name || matched?.variant_name || '';
+                        return (
+                          <tr key={item.id} className="hover:bg-surface-hover/50">
+                            <td className="px-2 py-1 font-sans font-extrabold text-text-primary text-[10px]">
+                              {prodName}
+                              {varName && varName !== 'Default' && varName !== 'Standard' && (
+                                <span className="text-[8px] font-normal text-text-muted block">({varName})</span>
+                              )}
+                            </td>
+                            <td className="px-1.5 py-1 text-center text-text-secondary font-bold">
+                              {item.quantity_grams ? `${(item.quantity_grams / 1000).toFixed(3)} kg` : `${item.quantity_units} pc`}
+                            </td>
+                            <td className="px-1.5 py-1 text-right text-text-secondary">
+                              ₹{(item.rate_paise_snapshot / 100).toFixed(2)}
+                            </td>
+                            <td className="px-2 py-1 text-right font-extrabold text-brand-500">
+                              ₹{(item.line_total_paise / 100).toFixed(2)}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1457,6 +1600,11 @@ function BillingView() {
         onResume={handleResume}
       />
 
+      <RefrigeratorItemPickerModal
+        isOpen={showFridgePicker}
+        onClose={() => setShowFridgePicker(false)}
+      />
+
       <OverrideDialog
         isOpen={showOverrideDialog}
         onClose={() => {
@@ -1471,6 +1619,15 @@ function BillingView() {
       {(configQuery.data?.billingSettings?.enableCalculatorWidget ?? true) && (
         <WastageCalculatorWidget />
       )}
+
+      {/* Home Delivery Prompt Modal (For bills with missing customer contact info) */}
+      <HomeDeliveryPromptModal
+        isOpen={Boolean(pendingHomeDeliveryInvoice)}
+        onClose={() => setPendingHomeDeliveryInvoice(null)}
+        invoice={pendingHomeDeliveryInvoice}
+        onSaveTicket={handleSaveHomeDeliveryTicket}
+        onSkipTicket={handleSkipHomeDeliveryTicket}
+      />
 
       {/* Flow A: Delivery Order Modal */}
       {showDeliveryModal && customer && (
@@ -1821,7 +1978,6 @@ function MainLayout() {
               <Route path="/expenses" element={<ExpenseManagementView />} />
               <Route path="/prices" element={<DailyMarketPricesView />} />
               <Route path="/ledgers" element={<EnterpriseLedgerView />} />
-              <Route path="/yield" element={<MeatProcessingYieldView />} />
               <Route path="/health" element={<SystemHealthView />} />
               <Route path="/forecasting" element={<DemandForecastingView />} />
               <Route path="/settings" element={<SettingsScreen />} />
@@ -1831,6 +1987,8 @@ function MainLayout() {
 
         <Statusbar dbHealth={dbHealthQuery.data} sysInfo={sysInfoQuery.data} />
       </div>
+
+      <WhatsAppToastManager />
     </div>
   );
 }

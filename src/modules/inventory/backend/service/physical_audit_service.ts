@@ -70,7 +70,7 @@ export class PhysicalAuditService {
       SELECT pv.id as variant_id, p.unit_type,
              COALESCE(sl.quantity_grams, 0) as system_grams,
              COALESCE(sl.quantity_units, 0) as system_units,
-             COALESCE(pv.last_purchase_cost_paise, pv.unit_cost_paise_cache, pv.cost_price_paise_per_unit, 0) as unit_cost_paise
+             COALESCE(pv.last_purchase_cost_paise, pv.unit_cost_paise_cache, pv.last_purchase_cost, pv.cost_price_paise_per_unit, 0) as unit_cost_paise
       FROM product_variants pv
       JOIN products p ON pv.product_id = p.id
       LEFT JOIN stock_ledger sl ON sl.product_variant_id = pv.id

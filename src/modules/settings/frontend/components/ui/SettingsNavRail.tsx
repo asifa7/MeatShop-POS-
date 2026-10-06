@@ -13,10 +13,12 @@ import {
   Palette,
   Keyboard,
   HardDrive,
+  MessageSquare,
   Search,
   ChevronRight,
 } from 'lucide-react';
 import { SettingsCategoryId, useSettingsDraftStore } from '../../hooks/useSettingsDraftStore';
+import { IPC_CHANNELS } from '../../../../../core/ipc/channels';
 
 export interface CategoryItem {
   id: SettingsCategoryId;
@@ -125,10 +127,38 @@ export const CATEGORIES: CategoryItem[] = [
     icon: <HardDrive size={16} />,
     group: 'DEVICE & APP',
   },
+  {
+    id: 'whatsapp',
+    label: 'WhatsApp & Templates',
+    sublabel: 'Bill caption, delivery notice, retry',
+    icon: <MessageSquare size={16} />,
+    group: 'DEVICE & APP',
+  },
 ];
 
 export const SettingsNavRail: React.FC = () => {
   const { activeCategory, setActiveCategory, searchQuery, setSearchQuery } = useSettingsDraftStore();
+  const [waConnected, setWaConnected] = React.useState<boolean | null>(null);
+
+  React.useEffect(() => {
+    let mounted = true;
+    if (window.api?.invoke) {
+      window.api.invoke(IPC_CHANNELS.WHATSAPP.GET_STATUS).then((raw: any) => {
+        const res = raw?.data ?? raw;
+        if (mounted && res && res.status) setWaConnected(res.status === 'connected');
+      }).catch(() => {});
+    }
+
+    const unsub = window.api?.on?.(IPC_CHANNELS.WHATSAPP.STATUS_UPDATE, (raw: any) => {
+      const data = raw?.data ?? raw;
+      if (mounted && data && data.status) setWaConnected(data.status === 'connected');
+    });
+
+    return () => {
+      mounted = false;
+      if (unsub) unsub();
+    };
+  }, []);
 
   const filteredCategories = CATEGORIES.filter((c) => {
     if (!searchQuery.trim()) return true;
@@ -236,7 +266,19 @@ export const SettingsNavRail: React.FC = () => {
                           {item.icon}
                         </span>
                         <div className="min-w-0">
-                          <p className="text-xs font-bold truncate leading-tight">{item.label}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="text-xs font-bold truncate leading-tight">{item.label}</p>
+                            {item.id === 'whatsapp' && waConnected !== null && (
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                  waConnected
+                                    ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+                                    : 'bg-amber-400 animate-pulse'
+                                }`}
+                                title={waConnected ? 'WhatsApp Connected' : 'WhatsApp Disconnected / Pair QR'}
+                              />
+                            )}
+                          </div>
                           <p
                             className={`text-[10px] truncate leading-tight ${
                               isActive ? 'text-white/80' : 'text-text-muted'

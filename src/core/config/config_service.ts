@@ -58,7 +58,11 @@ export const PaymentsSchema = z.object({
   defaultPaymentMethod: z.enum(['cash', 'card', 'upi', 'credit', 'split']).default('cash'),
   allowSplit: z.boolean().default(true),
   allowCredit: z.boolean().default(true),
+  upiId: z.string().default(''),
+  upiPayeeName: z.string().default(''),
+  printUpiQrOnDelivery: z.boolean().default(true),
 });
+
 
 // Cash Box & Shift Rules Schema
 export const CashboxSchema = z.object({
@@ -121,6 +125,92 @@ export const ReceiptTemplateSchema = z.object({
   showDiscount: z.boolean().default(true),
   showCashier: z.boolean().default(true),
   showCustomer: z.boolean().default(true),
+  leftMarginMm: z.number().default(0),
+  rightMarginMm: z.number().default(4),
+  rightSafeMarginMm: z.number().default(5),
+  safePrintWidthMm: z.number().min(35).max(80).default(60),
+  topMarginMm: z.number().default(0),
+  fontFamily: z.enum(['Consolas', 'Arial', 'Calibri', 'Segoe UI', 'Courier New']).default('Consolas'),
+  fontSize: z.enum(['small', 'medium', 'large']).default('medium'),
+  headerAlignment: z.enum(['left', 'center', 'right']).default('left'),
+  // Column proportions from Image 2
+  itemWidthPercent: z.number().default(40),
+  qtyWidthPercent: z.number().default(20),
+  rateWidthPercent: z.number().default(20),
+  amountWidthPercent: z.number().default(20),
+  // Toggles from Images 1, 2, 3
+  billPrintClosingBalance: z.boolean().default(true),
+  cardBillDouble: z.boolean().default(false),
+  subBillPrint: z.boolean().default(false),
+  cashDrawerOpen: z.boolean().default(false),
+  tamilFont: z.boolean().default(false),
+  splitAmount: z.boolean().default(false),
+  cashTender: z.boolean().default(false),
+  customerCredit: z.boolean().default(false),
+  crmPoints: z.boolean().default(false),
+  dosPrinter: z.boolean().default(false),
+  discountEveryLine: z.boolean().default(false),
+  noOfBillPrint: z.number().default(1),
+  secondBillDelayMs: z.number().default(100),
+  duplicateCopyLabel: z.string().default('Duplicate Copy'),
+  // Header & Footer configuration from Image 3
+  topSlogan: z.string().default(''),
+  shopName: z.string().default(''),
+  addressLine1: z.string().default(''),
+  addressLine2: z.string().default(''),
+  city: z.string().default(''),
+  pinCode: z.string().default(''),
+  phone: z.string().default(''),
+  gstin: z.string().default(''),
+  email: z.string().default(''),
+  condition1: z.string().default(''),
+  condition2: z.string().default(''),
+  condition3: z.string().default(''),
+  footerCondition1: z.string().default(''),
+  footerCondition2: z.string().default(''),
+  footerCondition3: z.string().default(''),
+  footerMsg1: z.string().default(''),
+  footerMsg2: z.string().default(''),
+  // Manual Ruler, Dead Zone & Position Nudge
+  unprintableRightZoneMm: z.number().default(20),
+  itemColLabel: z.string().default('ITEM'),
+  qtyColLabel: z.string().default('Qty'),
+  rateColLabel: z.string().default('Rate'),
+  amtColLabel: z.string().default('Amount'),
+  elementOffsets: z.record(z.string(), z.number()).default({}),
+  // Dynamic UPI QR on Delivery Bills
+  upiId: z.string().default(''),
+  upiPayeeName: z.string().default(''),
+  printUpiQrOnDelivery: z.boolean().default(true),
+  // WhatsApp Meta & Greetings settings
+  softwareMobileNo: z.string().default(''),
+  whatsAppSendMode: z.enum(['direct', 'cloud_api']).default('direct'),
+  whatsAppMetaApiKey: z.string().default(''),
+  whatsAppMetaPhoneId: z.string().default(''),
+  whatsAppWabaId: z.string().default(''),
+  whatsAppDefaultMessage: z.string().default('Thank you for shopping with us! Visit again. Quality is our promise.'),
+  whatsAppAutoFestivalWishes: z.boolean().default(true),
+  festivalGreetings: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    date: z.string(), // MM-DD or YYYY-MM-DD
+    greeting: z.string(),
+    enabled: z.boolean().default(true),
+  })).default([
+    { id: 'pongal', name: 'Pongal / Makar Sankranti', date: '01-14', greeting: '🌾 Wishing you and your family a very Happy & Prosperous Pongal! 🌞', enabled: true },
+    { id: 'republic_day', name: 'Republic Day', date: '01-26', greeting: '🇮🇳 Happy Republic Day! Let us celebrate the glory of our Nation.', enabled: true },
+    { id: 'ramadan_eid', name: 'Eid-ul-Fitr / Ramzan', date: '03-31', greeting: '🌙 Eid Mubarak! Wishing you peace, joy and prosperity.', enabled: true },
+    { id: 'tamil_new_year', name: 'Tamil New Year / Puthandu', date: '04-14', greeting: '✨ Iniya Tamizh Puthandu Nalvazhthukkal! Have a blissful year.', enabled: true },
+    { id: 'bakrid', name: 'Bakrid / Eid-ul-Adha', date: '06-07', greeting: '🌙 Bakrid Mubarak! May this day bring peace and happiness.', enabled: true },
+    { id: 'independence_day', name: 'Independence Day', date: '08-15', greeting: '🇮🇳 Happy Independence Day! Proud to serve you.', enabled: true },
+    { id: 'ganesh_chaturthi', name: 'Ganesh Chaturthi', date: '08-27', greeting: '🌺 Happy Ganesh Chaturthi! May Lord Ganesha shower you with blessings.', enabled: true },
+    { id: 'onam', name: 'Onam', date: '09-05', greeting: '🌸 Happy Onam! Wishing you joy, good health and prosperity.', enabled: true },
+    { id: 'ayudha_poojai', name: 'Ayudha Poojai / Saraswathi Poojai', date: '10-19', greeting: '✨ Happy Ayudha Poojai & Saraswathi Poojai! Best wishes for success and growth.', enabled: true },
+    { id: 'vijayadashami', name: 'Vijayadashami / Dussehra', date: '10-20', greeting: '🏹 Happy Vijayadashami! May victory and goodness prevail.', enabled: true },
+    { id: 'deepavali', name: 'Diwali / Deepavali', date: '11-08', greeting: '🪔 Wishing you and your family a glittering and Happy Deepavali! 🎆', enabled: true },
+    { id: 'christmas', name: 'Christmas', date: '12-25', greeting: '🎄 Merry Christmas! Wishing you joy, warmth and festive cheer.', enabled: true },
+    { id: 'new_year', name: 'New Year', date: '01-01', greeting: '🎉 Happy New Year! Wishing you a healthy and prosperous year ahead.', enabled: true }
+  ]),
 });
 
 // Billing Settings Schema (single source of truth for payment/print flags)
@@ -128,6 +218,23 @@ export const BillingSettingsSchema = z.object({
   skipPaymentConfirmation: z.boolean().default(false),
   enableCalculatorWidget: z.boolean().default(true),
   defaultPaymentMethod: z.enum(['cash', 'upi', 'card', 'split', 'credit']).default('cash'),
+});
+
+// Meat Yield Calculation Schema
+export const MeatYieldSchema = z.object({
+  defaultChickenYieldRatio: z.number().min(0.1).default(1.60),
+});
+
+// WhatsApp Configuration Schema
+export const WhatsAppConfigSchema = z.object({
+  maxRetries: z.number().min(1).max(10).default(3),
+  retryBackoffSeconds: z.number().min(5).max(300).default(30),
+  billCaptionTemplate: z.string().default(
+    "🧾 *{shopName}*\nDear *{customerName}*, greetings from {shopName}! 🙏\n\n📄 *Bill No:* {billNo}\n💰 *Bill Total:* ₹{netAmount}\n📅 *Date:* {date}\n\nAttached is your digital bill receipt. Thank you for choosing us! ✨"
+  ),
+  deliveryMessageTemplate: z.string().default(
+    "🛵 *Order Confirmed - Will deliver shortly!*\nDear *{customerName}*, your order (#{billNo}) is freshly prepared and out for delivery shortly. Thank you! 🙏"
+  ),
 });
 
 // Full App Config Schema
@@ -146,6 +253,7 @@ export const AppConfigSchema = z.object({
   hardware: HardwareSchema.default({}),
   receiptTemplate: ReceiptTemplateSchema.default({}),
   billingSettings: BillingSettingsSchema.default({}),
+  meatYield: MeatYieldSchema.default({}),
   backup: z.object({
     backupDir: z.string().default(''),
     autoBackupOnClose: z.boolean().default(true),
@@ -156,6 +264,7 @@ export const AppConfigSchema = z.object({
     enableFileLogging: z.boolean().default(true),
   }).default({}),
   featureFlags: FeatureFlagsSchema.default({}),
+  whatsAppConfig: WhatsAppConfigSchema.default({}),
 });
 
 export type FeatureFlags = z.infer<typeof FeatureFlagsSchema>;
@@ -230,6 +339,9 @@ export class ConfigService implements IConfigService {
         defaultPaymentMethod: 'cash',
         allowSplit: true,
         allowCredit: true,
+        upiId: '',
+        upiPayeeName: '',
+        printUpiQrOnDelivery: false,
       },
       cashbox: {
         enableShifts: true,
@@ -274,6 +386,9 @@ export class ConfigService implements IConfigService {
         cashDrawerEnabled: true,
       },
       receiptTemplate: {
+        upiId: '',
+        upiPayeeName: '',
+        printUpiQrOnDelivery: false,
         paperWidth: '80mm',
         headerMessage: 'Fresh Quality Meats Daily',
         footerMessage: 'Thank you for your business! Visit again.',
@@ -284,11 +399,85 @@ export class ConfigService implements IConfigService {
         showDiscount: true,
         showCashier: true,
         showCustomer: true,
+        leftMarginMm: 0,
+        rightMarginMm: 4,
+        rightSafeMarginMm: 5,
+        safePrintWidthMm: 60,
+        topMarginMm: 0,
+        fontFamily: 'Consolas',
+        fontSize: 'medium',
+        headerAlignment: 'left',
+        itemWidthPercent: 40,
+        qtyWidthPercent: 20,
+        rateWidthPercent: 20,
+        amountWidthPercent: 20,
+        billPrintClosingBalance: true,
+        cardBillDouble: false,
+        subBillPrint: false,
+        cashDrawerOpen: false,
+        tamilFont: false,
+        splitAmount: false,
+        cashTender: false,
+        customerCredit: false,
+        crmPoints: false,
+        dosPrinter: false,
+        discountEveryLine: false,
+        noOfBillPrint: 1,
+        secondBillDelayMs: 100,
+        duplicateCopyLabel: 'Duplicate Copy',
+        topSlogan: '',
+        shopName: '',
+        addressLine1: '',
+        addressLine2: '',
+        city: '',
+        pinCode: '',
+        phone: '',
+        gstin: '',
+        email: '',
+        condition1: '',
+        condition2: '',
+        condition3: '',
+        footerCondition1: '',
+        footerCondition2: '',
+        footerCondition3: '',
+        footerMsg1: '',
+        footerMsg2: '',
+        softwareMobileNo: '',
+        whatsAppSendMode: 'direct',
+        whatsAppMetaApiKey: '',
+        whatsAppMetaPhoneId: '',
+        whatsAppWabaId: '',
+        whatsAppDefaultMessage: 'Thank you for shopping with us! Visit again. Quality is our promise.',
+        whatsAppAutoFestivalWishes: true,
+        unprintableRightZoneMm: 20,
+        itemColLabel: 'ITEM',
+        qtyColLabel: 'Qty',
+        rateColLabel: 'Rate',
+        amtColLabel: 'Amount',
+        elementOffsets: {},
+        festivalGreetings: [
+          { id: 'pongal', name: 'Pongal / Makar Sankranti', date: '01-14', greeting: '🌾 Wishing you and your family a very Happy & Prosperous Pongal! 🌞', enabled: true },
+          { id: 'republic_day', name: 'Republic Day', date: '01-26', greeting: '🇮🇳 Happy Republic Day! Let us celebrate the glory of our Nation.', enabled: true },
+          { id: 'ramadan_eid', name: 'Eid-ul-Fitr / Ramzan', date: '03-31', greeting: '🌙 Eid Mubarak! Wishing you peace, joy and prosperity.', enabled: true },
+          { id: 'tamil_new_year', name: 'Tamil New Year / Puthandu', date: '04-14', greeting: '✨ Iniya Tamizh Puthandu Nalvazhthukkal! Have a blissful year.', enabled: true },
+          { id: 'bakrid', name: 'Bakrid / Eid-ul-Adha', date: '06-07', greeting: '🌙 Bakrid Mubarak! May this day bring peace and happiness.', enabled: true },
+          { id: 'independence_day', name: 'Independence Day', date: '08-15', greeting: '🇮🇳 Happy Independence Day! Proud to serve you.', enabled: true },
+          { id: 'ganesh_chaturthi', name: 'Ganesh Chaturthi', date: '08-27', greeting: '🌺 Happy Ganesh Chaturthi! May Lord Ganesha shower you with blessings.', enabled: true },
+          { id: 'onam', name: 'Onam', date: '09-05', greeting: '🌸 Happy Onam! Wishing you joy, good health and prosperity.', enabled: true },
+          { id: 'ayudha_poojai', name: 'Ayudha Poojai / Saraswathi Poojai', date: '10-19', greeting: '✨ Happy Ayudha Poojai & Saraswathi Poojai! Best wishes for success and growth.', enabled: true },
+          { id: 'vijayadashami', name: 'Vijayadashami / Dussehra', date: '10-20', greeting: '🏹 Happy Vijayadashami! May victory and goodness prevail.', enabled: true },
+          { id: 'deepavali', name: 'Diwali / Deepavali', date: '11-08', greeting: '🪔 Wishing you and your family a glittering and Happy Deepavali! 🎆', enabled: true },
+          { id: 'christmas', name: 'Christmas', date: '12-25', greeting: '🎄 Merry Christmas! Wishing you joy, warmth and festive cheer.', enabled: true },
+          { id: 'new_year', name: 'New Year', date: '01-01', greeting: '🎉 Happy New Year! Wishing you a healthy and prosperous year ahead.', enabled: true }
+        ],
       },
       billingSettings: {
         skipPaymentConfirmation: false,
         enableCalculatorWidget: true,
         defaultPaymentMethod: 'cash',
+      },
+      meatYield: {
+        defaultChickenYieldRatio: 1.60,
       },
       backup: {
         backupDir: defaultBackupDir,
@@ -307,6 +496,14 @@ export class ConfigService implements IConfigService {
         enableMeatMode: true,
         enableManufacturing: false,
         enablePharmacy: false,
+      },
+      whatsAppConfig: {
+        maxRetries: 3,
+        retryBackoffSeconds: 30,
+        billCaptionTemplate:
+          "🧾 *{shopName}*\nDear *{customerName}*, greetings from {shopName}! 🙏\n\n📄 *Bill No:* {billNo}\n💰 *Bill Total:* ₹{netAmount}\n📅 *Date:* {date}\n\nAttached is your digital bill receipt. Thank you for choosing us! ✨",
+        deliveryMessageTemplate:
+          "🛵 *Order Confirmed - Will deliver shortly!*\nDear *{customerName}*, your order (#{billNo}) is freshly prepared and out for delivery shortly. Thank you! 🙏",
       },
     };
 
@@ -363,6 +560,10 @@ export class ConfigService implements IConfigService {
         backup: { ...this.currentConfig.backup, ...(newConfig.backup || {}) },
         logging: { ...this.currentConfig.logging, ...(newConfig.logging || {}) },
         featureFlags: { ...this.currentConfig.featureFlags, ...(newConfig.featureFlags || {}) },
+        // Keep WhatsApp settings when another part of the app performs a
+        // partial configuration update. Without this merge, a partial update
+        // can replace the saved bill-caption template with schema defaults.
+        whatsAppConfig: { ...this.currentConfig.whatsAppConfig, ...(newConfig.whatsAppConfig || {}) },
       };
 
       if (newConfig.invoice?.editDeletePassword && newConfig.invoice.editDeletePassword.trim()) {

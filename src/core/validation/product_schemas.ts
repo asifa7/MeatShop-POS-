@@ -8,9 +8,10 @@ export const CreateProductSchema = z.object({
   category: z.enum(PRODUCT_CATEGORIES, {
     errorMap: () => ({ message: 'Category must be one of: Chicken, Mutton, Seafood, Eggs' }),
   }),
-  unit_type: z.enum(['weight', 'piece'], {
-    errorMap: () => ({ message: 'Unit type must be weight or piece' }),
+  unit_type: z.enum(['weight', 'piece', 'live_dual'], {
+    errorMap: () => ({ message: 'Unit type must be weight, piece, or live_dual' }),
   }),
+  product_code: z.string().min(1).max(50).optional(),
   is_processed_cut: z.number().int().min(0).max(1).optional().default(0),
 });
 
@@ -19,7 +20,8 @@ export type CreateProductInput = z.infer<typeof CreateProductSchema>;
 export const UpdateProductSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   category: z.enum(PRODUCT_CATEGORIES).optional(),
-  unit_type: z.enum(['weight', 'piece']).optional(),
+  unit_type: z.enum(['weight', 'piece', 'live_dual']).optional(),
+  product_code: z.string().min(1).max(50).optional(),
   is_processed_cut: z.number().int().min(0).max(1).optional(),
 });
 

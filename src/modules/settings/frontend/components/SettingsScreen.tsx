@@ -30,6 +30,7 @@ import { PrinterHardwareSettings } from './categories/PrinterHardwareSettings';
 import { AppearanceSettings } from './categories/AppearanceSettings';
 import { KeyboardShortcutsSettings } from './categories/KeyboardShortcutsSettings';
 import { SystemDataSettings } from './categories/SystemDataSettings';
+import { WhatsAppSettings } from './categories/WhatsAppSettings';
 
 // Contextual Live Preview Components
 import { BusinessCardPreview } from './previews/BusinessCardPreview';
@@ -166,6 +167,8 @@ export const SettingsScreen: React.FC = () => {
         return <KeyboardShortcutsSettings />;
       case 'system_data':
         return <SystemDataSettings />;
+      case 'whatsapp':
+        return <WhatsAppSettings />;
       default:
         return <BusinessSettings />;
     }
@@ -176,6 +179,7 @@ export const SettingsScreen: React.FC = () => {
       case 'business':
         return <BusinessCardPreview />;
       case 'billing':
+      case 'whatsapp':
         return <ThermalReceiptPreview />;
       case 'tax':
         return <TaxCalculationPreview />;

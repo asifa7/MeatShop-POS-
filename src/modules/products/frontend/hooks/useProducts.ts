@@ -40,3 +40,36 @@ export function useProductRateHistory(productId: number | null) {
   });
 }
 
+export interface DeletedProductArchiveItem {
+  id: number;
+  entity_type: string;
+  original_id: number;
+  original_parent_id?: number | null;
+  product_code?: string | null;
+  name: string;
+  category: string;
+  unit_type: string;
+  is_processed_cut: number;
+  track_in_inventory: number;
+  current_rate_paise: number;
+  cost_price_paise: number;
+  snapshot_json: string;
+  deleted_by?: number | null;
+  deleted_by_username?: string | null;
+  deleted_at: string;
+  restored_at?: string | null;
+  restored_by?: number | null;
+}
+
+export function useDeletedProductsArchive() {
+  return useQuery<DeletedProductArchiveItem[]>({
+    queryKey: ['admin', 'deleted-products-archive'],
+    queryFn: async () => {
+      const res = await window.api.invoke(IPC_CHANNELS.PRODUCTS.GET_DELETED_ARCHIVE);
+      if (!res.success) throw new Error(res.error.message);
+      return res.data;
+    },
+    staleTime: 5000,
+  });
+}
+

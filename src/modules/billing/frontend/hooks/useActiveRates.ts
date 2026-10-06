@@ -10,8 +10,8 @@ export function useActiveRates() {
       if (!res.success) throw new Error(res.error.message);
       return res.data;
     },
-    refetchInterval: 30000,
-    staleTime: 30000,
+    refetchInterval: 15000,
+    staleTime: 5000,
   });
 }
 

@@ -66,6 +66,7 @@ export interface Invoice {
   round_off_paise?: number;
   narration?: string | null;
   print_delivery_token?: number;
+  whatsapp_delivery_status?: 'pending' | 'sent' | 'not_delivered' | null;
   shop_name_snapshot: string | null;
   shop_address_snapshot: string | null;
 }
@@ -188,6 +189,7 @@ export interface IPCRequestMap {
   'system:get-info': void;
   'system:log': { level: string; message: string; meta?: any };
   'system:backup-database': void;
+  'system:restore-database': { filePath?: string } | void;
   'system:export-csv': { tableName: string };
 
   'db:health': void;
@@ -223,8 +225,8 @@ export interface IPCRequestMap {
   'billing:record-payment': { invoice_id: number; method: 'cash' | 'upi' | 'card' | 'split'; amount_paise: number; reference_number?: string | null };
   'billing:list-held': void;
   'billing:delete-draft': { invoiceId: number };
-  'billing:print-receipt': { invoiceId: number; silent?: boolean };
-  'billing:reopen-invoice': { invoice_id: number; password?: string };
+  'billing:print-receipt': { invoice_id: number; invoiceId?: number; silent?: boolean; previewOnly?: boolean; printType?: 'both' | 'normal' | 'token'; isInitialPrint?: boolean; reason?: string };
+  'billing:reopen-invoice': { invoice_id: number; password?: string; reason?: string };
   'billing:delete-invoice': { invoice_id: number; reason: string; password?: string };
   'billing:verify-action-password': { password: string };
 
@@ -238,6 +240,15 @@ export interface IPCRequestMap {
   'inventory:create-supplier': { name: string; contact?: string | null };
   'inventory:record-purchase': { supplier_id: number; product_variant_id: number; quantity_grams: number | null; quantity_units: number | null; cost_paise: number };
   'inventory:list-purchases': void;
+  'inventory:empty-inventory': {
+    scope: 'all' | 'category' | 'products';
+    category?: string;
+    productIds?: number[];
+    variantIds?: number[];
+    includeLiveBirds?: boolean;
+    includeRefrigerator?: boolean;
+    reason?: string;
+  };
 
   'reports:get-sales-summary': { startDate: string; endDate: string };
   'reports:get-category-sales': { startDate: string; endDate: string };
@@ -249,6 +260,9 @@ export interface IPCRequestMap {
   'products:deactivate': { id: number };
   'products:reactivate': { id: number };
   'products:delete': { id: number };
+  'products:deactivate-category': { category: string };
+  'products:reactivate-category': { category: string };
+  'products:delete-category': { category: string };
   'products:create-variant': { product_id: number; variant_name: string; rate_paise: number };
   'products:update-variant-name': { variantId: number; variant_name: string };
   'products:deactivate-variant': { id: number };
@@ -256,6 +270,15 @@ export interface IPCRequestMap {
   'products:delete-variant': { id: number };
   'products:update-rate': { variant_id: number; new_rate_paise: number; set_by?: number };
   'products:get-rate-history': { variantId: number };
+  'products:get-deleted-archive': void;
+  'products:restore-deleted': { archiveId: number };
+
+  'whatsapp:get-status': void;
+  'whatsapp:logout': void;
+  'whatsapp:force-reconnect': void;
+  'whatsapp:request-pairing-code': { phone: string };
+  'whatsapp:send-message': { phone: string; message: string };
+  'billing:send-whatsapp-bill': { invoice_id: number; customPhone?: string };
 }
 
 export interface IPCResponseMap {
@@ -269,9 +292,10 @@ export interface IPCResponseMap {
   'system:get-info': { platform: string; arch: string; version: string };
   'system:log': void;
   'system:backup-database': { success: boolean; path: string };
+  'system:restore-database': { success: boolean; integrity?: string; reason?: string; error?: any };
   'system:export-csv': { success: boolean; filePath: string };
 
-  'db:health': { status: string; version?: string };
+  'db:health': { status: string; integrity?: string; size_bytes?: number; version?: string };
   'db:run-migrations': { success: boolean };
 
   'billing:create-invoice': Invoice;
@@ -303,6 +327,14 @@ export interface IPCResponseMap {
   'inventory:create-supplier': SupplierRow;
   'inventory:record-purchase': PurchaseRow;
   'inventory:list-purchases': PurchaseRow[];
+  'inventory:empty-inventory': {
+    success: boolean;
+    message: string;
+    variantsReset: number;
+    batchesExhausted: number;
+    liveBatchesClosed: number;
+    fridgeItemsRemoved: number;
+  };
 
   'reports:get-sales-summary': any;
   'reports:get-category-sales': any;
@@ -314,6 +346,9 @@ export interface IPCResponseMap {
   'products:deactivate': void;
   'products:reactivate': void;
   'products:delete': void;
+  'products:deactivate-category': void;
+  'products:reactivate-category': void;
+  'products:delete-category': void;
   'products:create-variant': ProductVariantRow;
   'products:update-variant-name': void;
   'products:deactivate-variant': void;
@@ -321,6 +356,15 @@ export interface IPCResponseMap {
   'products:delete-variant': void;
   'products:update-rate': void;
   'products:get-rate-history': any[];
+  'products:get-deleted-archive': any[];
+  'products:restore-deleted': any;
+
+  'whatsapp:get-status': { status: 'connected' | 'connecting' | 'disconnected'; qrCodeDataUrl: string | null; userJid?: string; phone?: string; hasSavedSession?: boolean };
+  'whatsapp:logout': { success: boolean; error?: string };
+  'whatsapp:force-reconnect': { status: 'connected' | 'connecting' | 'disconnected'; qrCodeDataUrl: string | null; userJid?: string; phone?: string; hasSavedSession?: boolean };
+  'whatsapp:request-pairing-code': { success: boolean; code?: string; error?: string };
+  'whatsapp:send-message': { success: boolean; phone?: string; messageId?: string; failureReason?: string };
+  'billing:send-whatsapp-bill': { success: boolean; phone?: string; billText?: string; messageId?: string; failureReason?: string };
 }
 
 // ─── Customer A/R Types ───────────────────────────────────────────────────────

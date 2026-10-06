@@ -24,7 +24,6 @@ export default function StockValuationView() {
   // Product Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [classificationFilter, setClassificationFilter] = useState<'all' | 'live_yield' | 'refrigerator_direct'>('all');
 
   // Asset Filters
   const [assetCategoryFilter, setAssetCategoryFilter] = useState('all');
@@ -56,11 +55,10 @@ export default function StockValuationView() {
         item.product_code.toLowerCase().includes(q);
       
       const matchesCat = selectedCategory === 'all' || item.category === selectedCategory;
-      const matchesClass = classificationFilter === 'all' || item.stock_classification === classificationFilter;
 
-      return matchesSearch && matchesCat && matchesClass;
+      return matchesSearch && matchesCat;
     });
-  }, [valuationData, searchQuery, selectedCategory, classificationFilter]);
+  }, [valuationData, searchQuery, selectedCategory]);
 
   // Categories list
   const categories = useMemo(() => {
@@ -229,16 +227,6 @@ export default function StockValuationView() {
                   <option key={cat} value={cat}>{cat}</option>
                 ))}
               </select>
-
-              <select
-                value={classificationFilter}
-                onChange={e => setClassificationFilter(e.target.value as any)}
-                className="bg-surface-panel border border-border-subtle rounded-xl px-3 py-1.5 text-xs text-text-primary outline-none focus:border-brand-500"
-              >
-                <option value="all">All Classifications</option>
-                <option value="refrigerator_direct">Refrigerator / Direct Stock</option>
-                <option value="live_yield">Live / Yield-Tracked</option>
-              </select>
             </div>
           </div>
 
@@ -249,7 +237,7 @@ export default function StockValuationView() {
                 <thead>
                   <tr className="border-b border-border-subtle bg-surface-app text-text-muted font-bold uppercase text-[10px]">
                     <th className="py-3 px-4">Item & Code</th>
-                    <th className="py-3 px-3">Classification</th>
+                    <th className="py-3 px-3">Category</th>
                     <th className="py-3 px-3 text-right">In-Stock Qty</th>
                     <th className="py-3 px-3 text-right">Buying Cost (₹)</th>
                     <th className="py-3 px-3 text-right">Selling Price (₹)</th>
@@ -258,7 +246,7 @@ export default function StockValuationView() {
                     <th className="py-3 px-4 text-right">Potential Profit (₹)</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-border-subtle/50">
+                <tbody className="divide-y border-subtle/50">
                   {isValuationLoading ? (
                     <tr>
                       <td colSpan={8} className="py-12 text-center text-text-muted">
@@ -280,12 +268,8 @@ export default function StockValuationView() {
                           <div className="text-[11px] text-text-muted">{item.variant_name} <span className="font-mono">[{item.product_code}]</span></div>
                         </td>
                         <td className="py-3 px-3">
-                          <span className={`px-2 py-0.5 rounded-md font-semibold text-[10px] uppercase ${
-                            item.stock_classification === 'live_yield'
-                              ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-                              : 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30'
-                          }`}>
-                            {item.stock_classification === 'live_yield' ? 'Live / Yield' : 'Refrigerator / Direct'}
+                          <span className="px-2 py-0.5 rounded-md font-semibold text-[10px] uppercase bg-surface-app text-text-secondary border border-border-subtle">
+                            {item.category}
                           </span>
                         </td>
                         <td className="py-3 px-3 text-right font-mono font-bold text-text-primary">

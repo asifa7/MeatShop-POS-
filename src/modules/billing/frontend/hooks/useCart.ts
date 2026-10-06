@@ -9,6 +9,7 @@ interface CartState {
   isGstInvoice: boolean;
   isLoading: boolean;
 
+  initActiveDraft: () => Promise<void>;
   createDraft: (isGst?: boolean) => Promise<void>;
   loadInvoice: (invoiceId: number) => Promise<void>;
   addItem: (args: {
@@ -18,6 +19,8 @@ interface CartState {
     override_rate_paise?: number | null;
     override_reason?: string | null;
     overridden_by?: number | null;
+    stock_source?: 'processed_chicken' | 'mutton_regular' | 'refrigerator' | 'none';
+    refrigerator_stock_id?: number | null;
   }) => Promise<void>;
   updateItemQuantity: (itemId: number, quantityGrams: number | null, quantityUnits: number | null) => Promise<void>;
   updateItemManualAllocations: (itemId: number, allocations: any[]) => void;
@@ -33,6 +36,8 @@ interface CartState {
     dressing_charge_paise?: number;
     narration?: string | null;
     print_delivery_token?: boolean;
+    is_delivery?: boolean;
+    delivery_charge_paise?: number;
   }) => Promise<InvoiceDetail | null>;
   toggleGst: (isGst: boolean, gstNumber?: string | null) => Promise<void>;
   recordPayment: (method: 'cash' | 'upi' | 'card' | 'split', amountPaise: number, referenceNumber?: string | null) => Promise<void>;
@@ -64,6 +69,21 @@ export const useCart = create<CartState>((set, get) => ({
   isGstInvoice: false,
   isLoading: false,
 
+  initActiveDraft: async () => {
+    try {
+      set(() => ({ isLoading: true }));
+      const res = await window.api.invoke(IPC_CHANNELS.BILLING.GET_ACTIVE_DRAFT);
+      if (res.success && res.data) {
+        applyInvoiceData(set, res.data);
+      } else {
+        set(() => ({ isLoading: false }));
+      }
+    } catch (e) {
+      console.error('Failed to init active draft:', e);
+      set(() => ({ isLoading: false }));
+    }
+  },
+
   createDraft: async (isGst = false) => {
     set(() => ({ isLoading: true }));
     const res = await window.api.invoke(IPC_CHANNELS.BILLING.CREATE_INVOICE, { is_gst_invoice: isGst });
@@ -85,7 +105,15 @@ export const useCart = create<CartState>((set, get) => ({
   },
 
   addItem: async (args) => {
-    const { activeInvoiceId } = get();
+    let { activeInvoiceId } = get();
+    if (!activeInvoiceId) {
+      await get().initActiveDraft();
+      activeInvoiceId = get().activeInvoiceId;
+    }
+    if (!activeInvoiceId) {
+      await get().createDraft();
+      activeInvoiceId = get().activeInvoiceId;
+    }
     if (!activeInvoiceId) return;
     set(() => ({ isLoading: true }));
     const data = await invokeIPC(IPC_CHANNELS.BILLING.ADD_ITEM, { invoice_id: activeInvoiceId, ...args });

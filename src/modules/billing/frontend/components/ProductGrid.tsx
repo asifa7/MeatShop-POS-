@@ -11,9 +11,10 @@ interface ProductGridProps {
   selectedVariant: ProductVariant | null;
   searchTerm: string;
   onSearchTermChange: (term: string) => void;
+  onOpenFridgePicker?: () => void;
 }
 
-export default function ProductGrid({ onSelectVariant, selectedVariant, searchTerm, onSearchTermChange }: ProductGridProps) {
+export default function ProductGrid({ onSelectVariant, selectedVariant, searchTerm, onSearchTermChange, onOpenFridgePicker }: ProductGridProps) {
   const { config } = useAppearance();
   const { data: variants, isLoading } = useActiveRates();
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -21,7 +22,19 @@ export default function ProductGrid({ onSelectVariant, selectedVariant, searchTe
   const gridColsClass = config.tileSize === 'small' ? 'grid-cols-3' : config.tileSize === 'large' ? 'grid-cols-1' : 'grid-cols-2';
 
   const quickVariants = useMemo(
-    () => [...(variants ?? [])].sort((a, b) => `${a.product_name} ${a.variant_name}`.localeCompare(`${b.product_name} ${b.variant_name}`)),
+    () =>
+      [...(variants ?? [])]
+        .filter(v => {
+          if (v.unit_type === 'live_dual') return false;
+          const isLive = (v as any).stock_classification === 'live_yield' || 
+            (v.category?.toLowerCase().includes('live') && v.category?.toLowerCase().includes('chicken'));
+          return !isLive;
+        })
+        .sort((a, b) => {
+          const numA = Number(a.product_code?.replace(/\D/g, '') || a.id);
+          const numB = Number(b.product_code?.replace(/\D/g, '') || b.id);
+          return numA - numB;
+        }),
     [variants]
   );
 
@@ -29,9 +42,9 @@ export default function ProductGrid({ onSelectVariant, selectedVariant, searchTe
     if (!variants) return [];
     const set = new Set<string>();
     variants.forEach(v => {
-      if (v.product_name) {
-        const cat = v.product_name.split(' ')[0] || v.product_name;
-        set.add(cat);
+      const cat = v.category || (v.product_name ? v.product_name.split(' ')[0] : '');
+      if (cat && cat.trim()) {
+        set.add(cat.trim());
       }
     });
     return Array.from(set);
@@ -42,11 +55,14 @@ export default function ProductGrid({ onSelectVariant, selectedVariant, searchTe
     const term = searchTerm.trim().toLowerCase();
     
     if (term && !/^\d+$/.test(term)) {
-      result = result.filter(v => `${v.product_name} ${v.variant_name}`.toLowerCase().includes(term));
+      result = result.filter(v => `${v.product_name} ${v.variant_name} ${v.category || ''}`.toLowerCase().includes(term));
     }
     
     if (selectedCategory !== 'all') {
-      result = result.filter(v => v.product_name.toLowerCase().startsWith(selectedCategory.toLowerCase()));
+      result = result.filter(v => {
+        const cat = v.category || (v.product_name ? v.product_name.split(' ')[0] : '');
+        return cat.toLowerCase() === selectedCategory.toLowerCase();
+      });
     }
     
     return result;
@@ -69,9 +85,22 @@ export default function ProductGrid({ onSelectVariant, selectedVariant, searchTe
             <LayoutGrid size={15} className="text-brand-500" />
             <span>Product Catalog</span>
           </div>
-          <span className="text-[10px] font-mono text-text-muted bg-surface-card px-2 py-0.5 rounded border border-border-subtle font-bold">
-            {filteredVariants.length} items
-          </span>
+          <div className="flex items-center gap-2">
+            {onOpenFridgePicker && (
+              <button
+                type="button"
+                onClick={onOpenFridgePicker}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 border border-blue-500/40 text-[10.5px] font-extrabold transition-all shadow-sm cursor-pointer"
+                title="Sell Items Stored in Refrigerator"
+              >
+                <span>🧊</span>
+                <span>Fridge Stock</span>
+              </button>
+            )}
+            <span className="text-[10px] font-mono text-text-muted bg-surface-card px-2 py-0.5 rounded border border-border-subtle font-bold">
+              {filteredVariants.length} items
+            </span>
+          </div>
         </div>
 
         {/* Category Pills */}

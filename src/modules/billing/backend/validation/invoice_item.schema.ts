@@ -22,6 +22,7 @@ const PieceItemSchema = BaseInvoiceItemSchema.extend({
 
 export const AddInvoiceItemSchema = z.discriminatedUnion('unit_type', [
   WeightItemSchema.extend({ unit_type: z.literal('weight') }),
+  WeightItemSchema.extend({ unit_type: z.literal('live_dual') }),
   PieceItemSchema.extend({ unit_type: z.literal('piece') }),
 ]).superRefine((data, ctx) => {
   if (data.override_applied) {

@@ -141,6 +141,7 @@ export interface DeliveryOrder {
   otp_verified: number;
   special_prep_instructions?: string | null;
   customer_notes?: string | null;
+  delivery_address_snapshot?: string | null;
   internal_notes?: string | null;
   estimated_minutes?: number | null;
   actual_prep_minutes?: number | null;
@@ -148,6 +149,15 @@ export interface DeliveryOrder {
   scheduled_at?: string | null;
   dispatched_at?: string | null;
   delivered_at?: string | null;
+  delivered_by?: number | null;
+  delivered_by_name?: string | null;
+  delivered?: number;
+  payment_received?: number;
+  payment_received_at?: string | null;
+  payment_received_by?: number | null;
+  payment_received_by_name?: string | null;
+  amount_paid_now_paise?: number;
+  amount_pending_paise?: number;
   cancelled_at?: string | null;
   created_by: number;
   created_at: string;
@@ -160,7 +170,19 @@ export interface DeliveryOrder {
 export interface CreateDeliveryInput {
   invoice_id?: number;
   invoice_number?: string;
-  customer_id: number;
+  customer_id?: number | null;
+  customer_name?: string;
+  delivered?: number;
+  payment_received?: number;
+  amount_paid_now_paise?: number;
+  amount_pending_paise?: number;
+  customer_phone?: string;
+  delivery_address_snapshot?: string;
+  delivery_notes?: string;
+  assigned_staff_id?: number | null;
+  scheduled_slot?: string | null;
+  subtotal_paise?: number;
+  total_paise?: number;
   customer_address_id?: number;
   new_address?: Partial<CustomerAddress>;
   zone_id?: number;

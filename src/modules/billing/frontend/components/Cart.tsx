@@ -1,25 +1,28 @@
 import { useState, useEffect } from 'react';
-import { Pause, CheckCircle2, CreditCard, Banknote, Smartphone, SplitSquareVertical, Shield, RotateCcw, Truck } from 'lucide-react';
+import { Pause, CheckCircle2, CreditCard, Banknote, Smartphone, SplitSquareVertical, Shield, RotateCcw, Truck, Printer, MessageSquare, Loader2 } from 'lucide-react';
 import { useCart } from '../hooks/useCart';
 import { formatPaise, calculateLineTax } from '../types/billing.types';
 import CartLineItem from './CartLineItem';
 import ManualBatchPickerModal from './ManualBatchPickerModal';
 import SalesReturnModal from './SalesReturnModal';
+import { WhatsAppPhoneModal } from './WhatsAppPhoneModal';
 import type { InvoiceDetail, InvoiceItem } from '../types/billing.types';
 import { useCustomer } from '../../../customers/frontend/hooks/useCustomers';
 import { useBillingSettingsStore } from '../hooks/useBillingSettingsStore';
 import { usePOSShortcutsStore, formatKeyLabel, isKeyMatch } from '../hooks/usePOSShortcutsStore';
+import { useNavigate } from 'react-router-dom';
 
 interface CartProps {
   onOpenWeightEntry: (itemId: number, variantName: string, ratePaise: number) => void;
   onOpenPaymentPanel: () => void;
-  onCompleteSale: (invoice: InvoiceDetail) => void;
+  onCompleteSale: (invoice: InvoiceDetail, printType?: 'both' | 'normal' | 'token' | 'none') => void;
   selectedPaymentMethod: any;
   onSelectPaymentMethod: (method: any) => void;
   skipPaymentConfirmation?: boolean;
   defaultPaymentMethod?: 'cash' | 'upi' | 'card' | 'split';
   deliveryChargePaise?: number;
   onOpenDeliveryModal?: () => void;
+  onToggleDelivery?: () => void;
   isDeliveryOrder?: boolean;
 }
 
@@ -32,6 +35,7 @@ export default function Cart({
   defaultPaymentMethod = 'cash',
   deliveryChargePaise = 0,
   onOpenDeliveryModal,
+  onToggleDelivery,
   isDeliveryOrder = false,
 }: CartProps) {
   const cart = useCart();
@@ -43,6 +47,7 @@ export default function Cart({
     setIsPaymentSelectionFocused,
   } = useBillingSettingsStore();
   const { shortcuts } = usePOSShortcutsStore();
+  const navigate = useNavigate();
 
   const [removingId, setRemovingId] = useState<number | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -54,8 +59,47 @@ export default function Cart({
   const [flatDeduction, setFlatDeduction] = useState('');
   const [dressingCharge, setDressingCharge] = useState('');
   const [narration, setNarration] = useState('');
-  const [printDeliveryToken, setPrintDeliveryToken] = useState(false);
+  const [printNormalBill, setPrintNormalBill] = useState(true);
+  const [printTokenBill, setPrintTokenBill] = useState(false);
   const [cashGiven, setCashGiven] = useState('');
+  const [isSendingWhatsApp, setIsSendingWhatsApp] = useState(false);
+  const [showWhatsAppPhoneModal, setShowWhatsAppPhoneModal] = useState(false);
+  const [whatsAppFeedback, setWhatsAppFeedback] = useState<{ type: 'sending' | 'success' | 'error'; text: string } | null>(null);
+
+  const handleSendWhatsApp = async (overridePhone?: string) => {
+    if (!cart.activeInvoice?.id) return;
+    const targetPhone = (overridePhone || customer?.whatsapp || customer?.phone || customer?.phone2 || '').trim();
+    if (!targetPhone) {
+      setShowWhatsAppPhoneModal(true);
+      return;
+    }
+
+    setIsSendingWhatsApp(true);
+    const cleanPhone = targetPhone.replace(/[^0-9]/g, '').slice(-10);
+    setWhatsAppFeedback({ type: 'sending', text: `Sending bill image to +91 ${cleanPhone}...` });
+    try {
+      const res = await window.api.invoke('billing:send-whatsapp-bill', {
+        invoice_id: cart.activeInvoice.id,
+        customPhone: targetPhone,
+      });
+      if (res && res.success) {
+        setWhatsAppFeedback({ type: 'success', text: `✓ Bill image queued to send to +91 ${cleanPhone} in background!` });
+        setShowWhatsAppPhoneModal(false);
+      } else if (res && res.notLoggedIn) {
+        setWhatsAppFeedback({ type: 'error', text: '⚠️ WhatsApp not linked. Please scan QR in WhatsApp tab once.' });
+      } else if (res && res.failureReason && res.failureReason.toLowerCase().includes('phone')) {
+        setShowWhatsAppPhoneModal(true);
+        setWhatsAppFeedback({ type: 'error', text: res.failureReason });
+      } else {
+        setWhatsAppFeedback({ type: 'error', text: res?.failureReason || 'Failed to send WhatsApp bill' });
+      }
+    } catch (e: any) {
+      setWhatsAppFeedback({ type: 'error', text: `Error: ${e.message || 'Send failed'}` });
+    } finally {
+      setIsSendingWhatsApp(false);
+      setTimeout(() => setWhatsAppFeedback(null), 6000);
+    }
+  };
 
   const customerId = cart.activeInvoice?.customer_id ?? null;
   const { data: customer } = useCustomer(customerId);
@@ -83,7 +127,7 @@ export default function Cart({
       setFlatDeduction('');
       setDressingCharge('');
       setNarration('');
-      setPrintDeliveryToken(false);
+      setPrintTokenBill(false);
       setCashGiven('');
       setIsPaymentSelectionFocused(false);
     }
@@ -143,18 +187,31 @@ export default function Cart({
         await cart.recordPayment(methodToUse, netTotalPaise);
       }
 
-      const completed = await cart.completeInvoice({
+      let printType: 'both' | 'normal' | 'token' | 'none' = 'none';
+      if (printNormalBill && printTokenBill) {
+        printType = 'both';
+      } else if (printNormalBill) {
+        printType = 'normal';
+      } else if (printTokenBill) {
+        printType = 'token';
+      }
+
+      const completePayload = {
         discount_percent: discPercentNum > 0 ? discPercentNum : undefined,
         flat_deduction_paise: deductionPaise > 0 ? deductionPaise : undefined,
         dressing_charge_paise: dressingPaise > 0 ? dressingPaise : undefined,
         narration: narration.trim() ? narration.trim() : undefined,
-        print_delivery_token: printDeliveryToken,
-      });
+        print_delivery_token: printTokenBill,
+        is_delivery: isDeliveryOrder,
+        delivery_charge_paise: deliveryChargePaise || 0,
+      };
+      console.log('[DELIVERY-CHECK-CART]', 'isDeliveryOrder at completeInvoice time:', isDeliveryOrder, 'payload:', completePayload);
+      const completed = await cart.completeInvoice(completePayload);
 
       if (completed) {
         setLastCompletedInvoice(completed);
         setIsPaymentSelectionFocused(false);
-        onCompleteSale(completed);
+        onCompleteSale(completed, printType);
       }
     } catch (err: any) {
       console.error('Checkout error:', err);
@@ -274,19 +331,26 @@ export default function Cart({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {onOpenDeliveryModal && (
+          {(onToggleDelivery || onOpenDeliveryModal) && (
             <button
               type="button"
-              onClick={onOpenDeliveryModal}
-              className={`text-[10px] font-extrabold px-2 py-1 rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
+              onClick={() => {
+                console.log('[DELIVERY-TOGGLE]', 'before:', isDeliveryOrder, 'clicked');
+                if (!isDeliveryOrder) {
+                  setPrintTokenBill(true);
+                }
+                if (onToggleDelivery) onToggleDelivery();
+                else if (onOpenDeliveryModal) onOpenDeliveryModal();
+              }}
+              className={`text-[10px] font-extrabold px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
                 isDeliveryOrder
-                  ? 'bg-brand-500 text-white shadow-xs'
-                  : 'text-brand-400 bg-brand-500/10 hover:bg-brand-500/20 border border-brand-500/30'
+                  ? 'bg-brand-500 text-white shadow-sm ring-2 ring-brand-400/30'
+                  : 'text-text-muted hover:text-brand-400 bg-surface-card hover:bg-brand-500/10 border border-border-subtle hover:border-brand-500/30'
               }`}
-              title="Mark this bill for home delivery"
+              title={isDeliveryOrder ? 'Click to disable Home Delivery' : 'Click to enable Home Delivery for this bill'}
             >
-              <Truck size={11} />
-              <span>{isDeliveryOrder ? 'Delivery (Active)' : 'Mark as Delivery'}</span>
+              <Truck size={12} className={isDeliveryOrder ? 'text-white' : 'text-brand-400'} />
+              <span>{isDeliveryOrder ? 'Home Delivery ✓' : 'Home Delivery'}</span>
             </button>
           )}
           <button
@@ -455,18 +519,33 @@ export default function Cart({
             </div>
           </div>
 
-          {/* Delivery Token Checkbox */}
-          <div className="flex items-center gap-1.5 py-0.5">
-            <input
-              type="checkbox"
-              id="delivery-token-checkbox"
-              checked={printDeliveryToken}
-              onChange={e => setPrintDeliveryToken(e.target.checked)}
-              className="rounded border-border-subtle text-brand-500 focus:ring-brand-500 cursor-pointer"
-            />
-            <label htmlFor="delivery-token-checkbox" className="text-[10px] font-bold text-text-secondary cursor-pointer select-none">
-              Print Delivery Token (Swiggy / Zomato slip)
-            </label>
+          {/* Print Options: Bill Print & Token Bill */}
+          <div className="flex items-center justify-between bg-surface-card border border-border-subtle/80 rounded-lg px-2.5 py-1.5 shadow-sm">
+            <span className="text-[10px] font-bold text-text-secondary uppercase tracking-wider flex items-center gap-1">
+              <Printer size={12} className="text-brand-500" /> Print Options:
+            </span>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 text-[11px] font-bold text-text-primary cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  id="normal-bill-checkbox"
+                  checked={printNormalBill}
+                  onChange={e => setPrintNormalBill(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-border-subtle text-brand-500 focus:ring-brand-500 cursor-pointer accent-brand-500"
+                />
+                <span>Bill Print</span>
+              </label>
+              <label className="flex items-center gap-1.5 text-[11px] font-bold text-text-primary cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  id="token-bill-checkbox"
+                  checked={printTokenBill}
+                  onChange={e => setPrintTokenBill(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-border-subtle text-amber-500 focus:ring-amber-500 cursor-pointer accent-amber-500"
+                />
+                <span className="text-amber-400">Token Bill</span>
+              </label>
+            </div>
           </div>
 
           {/* Cash Tendered & Change Due (When Cash Payment Selected) */}
@@ -576,27 +655,63 @@ export default function Cart({
           </div>
 
           {/* Action Buttons */}
-          <div className="flex gap-1.5 pt-0.5">
+          <div className="space-y-1.5 pt-0.5">
+            <div className="flex gap-1.5">
+              <button
+                onClick={handleHold}
+                disabled={isProcessing}
+                className="btn-secondary flex-1 py-1.5 text-xs font-bold flex items-center justify-center gap-1"
+              >
+                <Pause size={12} />
+                Hold
+              </button>
+              <button
+                onClick={() => handleCheckout()}
+                disabled={isProcessing || (!selectedPaymentMethod && !skipPaymentConfirmation)}
+                className="btn-primary flex-1 py-1.5 text-xs font-black flex items-center justify-center gap-1.5 shadow-subtle group"
+                title={`Complete Sale & Print Bill (Shortcut: ${formatKeyLabel(shortcuts.checkout)})`}
+              >
+                <CheckCircle2 size={13} />
+                <span>{isProcessing ? 'Saving & Printing...' : 'Complete & Print'}</span>
+                <span className="text-[9px] font-mono font-bold bg-white/20 px-1 py-0.5 rounded text-white tracking-wider group-hover:bg-white/30">
+                  [{formatKeyLabel(shortcuts.checkout)}]
+                </span>
+              </button>
+            </div>
+
+            {/* In-Billing Direct Background WhatsApp Bill Send Button */}
             <button
-              onClick={handleHold}
-              disabled={isProcessing}
-              className="btn-secondary flex-1 py-1.5 text-xs font-bold flex items-center justify-center gap-1"
+              type="button"
+              onClick={() => handleSendWhatsApp()}
+              disabled={isProcessing || isSendingWhatsApp || cart.items.length === 0}
+              className="w-full py-1.5 px-3 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/40 text-emerald-400 text-xs font-black flex items-center justify-center gap-1.5 transition-all active:scale-[0.98] disabled:opacity-50"
+              title={customer?.phone ? `Send bill image to ${customer.name || customer.phone}` : 'Send current bill image to WhatsApp in background'}
             >
-              <Pause size={12} />
-              Hold
-            </button>
-            <button
-              onClick={() => handleCheckout()}
-              disabled={isProcessing || (!selectedPaymentMethod && !skipPaymentConfirmation)}
-              className="btn-primary flex-1 py-1.5 text-xs font-black flex items-center justify-center gap-1.5 shadow-subtle group"
-              title={`Complete Sale & Print Bill (Shortcut: ${formatKeyLabel(shortcuts.checkout)})`}
-            >
-              <CheckCircle2 size={13} />
-              <span>{isProcessing ? 'Saving & Printing...' : 'Complete & Print'}</span>
-              <span className="text-[9px] font-mono font-bold bg-white/20 px-1 py-0.5 rounded text-white tracking-wider group-hover:bg-white/30">
-                [{formatKeyLabel(shortcuts.checkout)}]
+              {isSendingWhatsApp ? (
+                <Loader2 size={13} className="animate-spin text-emerald-400" />
+              ) : (
+                <MessageSquare size={13} className="text-emerald-400" />
+              )}
+              <span>
+                {isSendingWhatsApp
+                  ? 'Sending Bill Image...'
+                  : `Send Bill Image via WhatsApp ${customer?.phone ? `(${customer.phone})` : ''}`}
               </span>
             </button>
+
+            {whatsAppFeedback && (
+              <div
+                className={`w-full text-[10px] px-2 py-1 rounded border font-bold text-center flex items-center justify-center gap-1.5 transition-all ${
+                  whatsAppFeedback.type === 'success'
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                    : whatsAppFeedback.type === 'sending'
+                    ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300 animate-pulse'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                }`}
+              >
+                <span>{whatsAppFeedback.text}</span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -623,6 +738,24 @@ export default function Cart({
         isOpen={isSalesReturnOpen}
         onClose={() => setIsSalesReturnOpen(false)}
       />
+
+      {/* Direct WhatsApp Phone Prompt Modal */}
+      {showWhatsAppPhoneModal && cart.activeInvoice && (
+        <WhatsAppPhoneModal
+          isOpen={showWhatsAppPhoneModal}
+          invoiceId={cart.activeInvoice.id}
+          invoiceNumber={cart.activeInvoice.invoice_number}
+          customerId={cart.activeInvoice.customer_id}
+          customerName={customer?.name}
+          initialPhone={customer?.whatsapp || customer?.phone || ''}
+          onClose={() => setShowWhatsAppPhoneModal(false)}
+          onSuccess={() => {
+            setWhatsAppFeedback({ type: 'success', text: '✓ Bill image queued for WhatsApp delivery in background!' });
+            setShowWhatsAppPhoneModal(false);
+            setTimeout(() => setWhatsAppFeedback(null), 5000);
+          }}
+        />
+      )}
     </div>
   );
 }

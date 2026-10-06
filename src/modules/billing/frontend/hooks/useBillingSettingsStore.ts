@@ -22,8 +22,7 @@ const getStoredSkipConfirmation = (): boolean => {
 
 const getStoredLastInvoice = (): InvoiceDetail | null => {
   try {
-    const raw = localStorage.getItem('pos_last_completed_invoice');
-    if (raw) return JSON.parse(raw);
+    localStorage.removeItem('pos_last_completed_invoice');
   } catch {}
   return null;
 };
@@ -37,15 +36,8 @@ export const useBillingSettingsStore = create<BillingSettingsStore>((set) => ({
     set({ skipPaymentConfirmation: val });
   },
 
-  lastCompletedInvoice: getStoredLastInvoice(),
+  lastCompletedInvoice: null,
   setLastCompletedInvoice: (inv: InvoiceDetail | null) => {
-    try {
-      if (inv) {
-        localStorage.setItem('pos_last_completed_invoice', JSON.stringify(inv));
-      } else {
-        localStorage.removeItem('pos_last_completed_invoice');
-      }
-    } catch {}
     set({ lastCompletedInvoice: inv });
   },
 

@@ -206,17 +206,20 @@ export class ProcurementService {
         }
       }
 
-      // 3. For each accepted item, update stock ledger and record transaction
+      // 3. For each accepted item, update stock ledger or live chicken batches
       for (const item of parsed.data.items) {
         const variant = container.productRepository.findVariantById(item.product_variant_id);
-        const isWeight = variant.unit_type === 'weight';
+        const product = db.prepare('SELECT * FROM products WHERE id = ?').get(variant?.product_id) as any;
+        const isLiveDual = variant?.unit_type === 'live_dual';
+        const isWeight = variant?.unit_type === 'weight' || isLiveDual;
+        const isLiveChicken = (isLiveDual || product?.stock_classification === 'live_yield') &&
+          (product?.category?.toLowerCase().includes('chicken') || product?.name?.toLowerCase().includes('chicken'));
+
         const deltaGrams = isWeight ? item.quantity_accepted : null;
         const deltaUnits = isWeight ? null : item.quantity_accepted;
 
-        // Update running balance in ledger
+        // 1. Every purchase without exception increments regular inventory in stock_ledger
         this.inventoryRepo.updateLedgerStock(item.product_variant_id, deltaGrams, deltaUnits);
-
-        // Record stock transaction history
         this.inventoryRepo.createTransaction({
           product_variant_id: item.product_variant_id,
           transaction_type: 'manual_adjustment',
@@ -224,6 +227,36 @@ export class ProcurementService {
           quantity_units: deltaUnits,
           reference_id: grn.id,
         });
+
+        // 2. If it is live chicken, also record in live_chicken_batches for yield/mortality tracking
+        if (isLiveChicken) {
+          const liveWeightGrams = deltaGrams ?? 0;
+          const poItem = item.purchase_order_item_id ? db.prepare('SELECT * FROM purchase_order_items WHERE id = ?').get(item.purchase_order_item_id) as any : null;
+          const countVal = poItem?.count || Math.max(1, Math.round((liveWeightGrams || 1600) / 1600));
+
+          const cleanBatchDate = parsed.data.received_date.replace(/[^0-9]/g, '').slice(0, 8);
+          const countRow = db.prepare('SELECT COUNT(*) as cnt FROM live_chicken_batches').get() as { cnt: number };
+          const seq = String(countRow.cnt + 1).padStart(4, '0');
+          const batchNum = `BAT-LIVE-${cleanBatchDate}-${seq}`;
+
+          db.prepare(`
+            INSERT INTO live_chicken_batches (
+              batch_number, supplier_id, purchase_date,
+              cost_per_kg_paise, initial_weight_grams, initial_count,
+              remaining_weight_grams, remaining_count, status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+          `).run(
+            batchNum,
+            parsed.data.supplier_id,
+            parsed.data.received_date,
+            poItem?.unit_price_paise || variant?.current_rate_paise_per_unit || 0,
+            liveWeightGrams,
+            countVal,
+            liveWeightGrams,
+            countVal,
+            `GRN Receipt #${grnNumber}`
+          );
+        }
       }
 
       return grn;
@@ -563,20 +596,21 @@ export class ProcurementService {
       // Update PO status to received
       this.purchaseOrderRepo.updateStatus(po.id, 'received');
 
-      // Update Stock Ledger, Create Batch & Transaction
+      // Update Stock Ledger, Create Batch & Transaction (or Live Chicken Batch)
       parsed.data.items.forEach((item, idx) => {
         const variant = container.productRepository.findVariantById(item.product_variant_id);
-        const product = db.prepare('SELECT stock_classification FROM products WHERE id = ?').get(variant?.product_id) as any;
-        if (product && product.stock_classification === 'live_yield') {
-          // Live yield items only
-        }
+        const product = db.prepare('SELECT * FROM products WHERE id = ?').get(variant?.product_id) as any;
 
         const isLiveDual = item.unit_type === 'live_dual' || variant?.unit_type === 'live_dual';
         const isWeight = item.unit_type === 'weight' || isLiveDual;
+        const isLiveChicken = (isLiveDual || product?.stock_classification === 'live_yield') &&
+          (product?.category?.toLowerCase().includes('chicken') || product?.name?.toLowerCase().includes('chicken'));
+
         const deltaGrams = isWeight ? Math.round(item.quantity * 1000) : null;
         const deltaUnits = !isWeight ? item.quantity : null;
-        const countValue = isLiveDual && item.count !== undefined ? item.count : null;
+        const countValue = isLiveDual && item.count !== undefined ? item.count : (isLiveChicken ? Math.max(1, Math.round((deltaGrams || 1600) / 1600)) : null);
 
+        // 1. Every purchase without exception increments regular inventory in stock_ledger
         this.inventoryRepo.updateLedgerStock(item.product_variant_id, deltaGrams, deltaUnits);
 
         this.inventoryRepo.createTransaction({
@@ -587,31 +621,57 @@ export class ProcurementService {
           quantity_units: deltaUnits,
         });
 
-        // Create distinct Stock Batch for FIFO tracking
-        try {
+        // 2. If it is live chicken, also record in live_chicken_batches for yield/mortality tracking
+        if (isLiveChicken) {
+          const liveWeightGrams = deltaGrams ?? 0;
+          const birdCount = countValue ?? 1;
+          const costPerKgPaise = item.unit_price_paise || 0;
+
+          const batchNum = `BAT-LIVE-${cleanDate}-${po.id}-${idx + 1}`;
           db.prepare(`
-            INSERT INTO product_stock_batches (
-              batch_number, product_variant_id, received_date,
-              initial_quantity_grams, initial_quantity_units, initial_count,
-              current_quantity_grams, current_quantity_units, current_count,
-              unit_cost_paise, source_type, source_ref_id, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'purchase', ?, 'active')
+            INSERT INTO live_chicken_batches (
+              batch_number, supplier_id, purchase_date,
+              cost_per_kg_paise, initial_weight_grams, initial_count,
+              remaining_weight_grams, remaining_count, status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
           `).run(
-            `BAT-PUR-${cleanDate}-${po.id}-${idx + 1}`,
-            item.product_variant_id,
+            batchNum,
+            parsed.data.supplier_id,
             parsed.data.received_date,
-            deltaGrams,
-            deltaUnits,
-            countValue,
-            deltaGrams,
-            deltaUnits,
-            countValue,
-            item.unit_price_paise,
-            po.id
+            costPerKgPaise,
+            liveWeightGrams,
+            birdCount,
+            liveWeightGrams,
+            birdCount,
+            `Quick Purchase PO #${po.po_number}`
           );
-        } catch (e) {
-          // If table not created yet or duplicate, log non-fatal
         }
+
+          // Create distinct Stock Batch for FIFO tracking
+          try {
+            db.prepare(`
+              INSERT INTO product_stock_batches (
+                batch_number, product_variant_id, received_date,
+                initial_quantity_grams, initial_quantity_units, initial_count,
+                current_quantity_grams, current_quantity_units, current_count,
+                unit_cost_paise, source_type, source_ref_id, status
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'purchase', ?, 'active')
+            `).run(
+              `BAT-PUR-${cleanDate}-${po.id}-${idx + 1}`,
+              item.product_variant_id,
+              parsed.data.received_date,
+              deltaGrams,
+              deltaUnits,
+              countValue,
+              deltaGrams,
+              deltaUnits,
+              countValue,
+              item.unit_price_paise,
+              po.id
+            );
+          } catch (e) {
+            // If table not created yet or duplicate, log non-fatal
+          }
 
         // Sync variant cost & stock cache
         productVariantsRepository.syncVariantCostCache(item.product_variant_id);

@@ -139,6 +139,7 @@ export interface Invoice {
   round_off_paise?: number;
   narration?: string | null;
   print_delivery_token?: number;
+  whatsapp_delivery_status?: 'pending' | 'sent' | 'not_delivered' | null;
   shop_name_snapshot: string | null;
   shop_address_snapshot: string | null;
 }
@@ -159,7 +160,9 @@ export interface InvoiceItem {
   created_at: string;
   product_name?: string;
   variant_name?: string;
-  unit_type?: 'weight' | 'piece';
+  unit_type?: 'weight' | 'piece' | 'live_dual';
+  product_code?: string;
+  category?: string;
 }
 
 export interface InvoiceDetail {
@@ -194,6 +197,8 @@ export interface AddInvoiceItemRepoInput {
   override_applied: number;
   override_reason: string | null;
   overridden_by: number | null;
+  stock_source?: string;
+  refrigerator_stock_id?: number | null;
 }
 
 export interface CompleteInvoiceUpdate {
@@ -214,6 +219,8 @@ export interface CompleteInvoiceUpdate {
   round_off_paise?: number;
   narration?: string | null;
   print_delivery_token?: number;
+  is_delivery?: number;
+  delivery_charge_paise?: number;
   shop_name_snapshot: string;
   shop_address_snapshot: string;
 }
@@ -256,6 +263,8 @@ export interface InvoiceItemReportRow {
 export interface IInvoiceRepository {
   create(input: CreateInvoiceRepoInput): Invoice;
   findById(id: number): InvoiceDetail;
+  findLatestDraft(): InvoiceDetail | null;
+  findLatestCompleted(): InvoiceDetail | null;
   findByInvoiceNumber(invoiceNumber: string): InvoiceDetail | undefined;
   completeInvoice(id: number, update: CompleteInvoiceUpdate): void;
   voidInvoice(id: number, voidedBy: number, reason: string): void;

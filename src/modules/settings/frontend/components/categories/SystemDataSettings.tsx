@@ -11,8 +11,31 @@ export const SystemDataSettings: React.FC = () => {
   const backup = draftConfig.backup;
 
   const [backupMsg, setBackupMsg] = useState<string | null>(null);
+  const [restoreMsg, setRestoreMsg] = useState<string | null>(null);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  const handleRestoreDatabase = async () => {
+    const confirmed = window.confirm("This will overwrite all current data. Continue?");
+    if (!confirmed) return;
+
+    setIsProcessing(true);
+    setRestoreMsg(null);
+    try {
+      const res = await window.api.invoke('system:restore-database');
+      if (res.success) {
+        setRestoreMsg(`Database restored successfully. Integrity check: ${res.integrity || 'ok'}.`);
+      } else if (res.reason === 'cancelled') {
+        setRestoreMsg(null);
+      } else {
+        setRestoreMsg(`Restore failed: ${res.error?.message || 'Error'}`);
+      }
+    } catch (err: any) {
+      setRestoreMsg(`Restore failed: ${err.message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const handleBackupNow = async () => {
     setIsProcessing(true);
@@ -111,6 +134,28 @@ export const SystemDataSettings: React.FC = () => {
           <div className="p-3 rounded-xl bg-surface-card border border-border-subtle text-xs font-bold text-text-primary flex items-center gap-2">
             <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0" />
             <span>{backupMsg}</span>
+          </div>
+        )}
+
+        <SettingRow
+          label="Restore Database Snapshot"
+          description="Overwrite current SQLite database with a previously saved backup file (.db)"
+        >
+          <button
+            type="button"
+            disabled={isProcessing}
+            onClick={handleRestoreDatabase}
+            className="px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+          >
+            <Database size={13} />
+            <span>{isProcessing ? 'Restoring...' : 'Restore Database'}</span>
+          </button>
+        </SettingRow>
+
+        {restoreMsg && (
+          <div className="p-3 rounded-xl bg-surface-card border border-border-subtle text-xs font-bold text-text-primary flex items-center gap-2">
+            <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0" />
+            <span>{restoreMsg}</span>
           </div>
         )}
       </SettingCard>

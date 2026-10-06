@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   CheckCircle2,
   Printer,
@@ -10,12 +10,20 @@ import {
   ChevronDown,
   ChevronUp,
   Receipt,
+  MessageSquare,
+  Send,
+  Loader2,
+  Sparkles,
 } from 'lucide-react';
 import { useBillingSettingsStore } from '../hooks/useBillingSettingsStore';
 import { useCart } from '../hooks/useCart';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSession } from '../../../auth/frontend/hooks/useAuth';
+import { useActiveRates } from '../hooks/useActiveRates';
+import { IPC_CHANNELS } from '../../../../core/ipc/channels';
 import ReprintLookupModal from './ReprintLookupModal';
+import { WhatsAppPhoneModal } from './WhatsAppPhoneModal';
+import { useNavigate } from 'react-router-dom';
 
 interface LastBillStatusPanelProps {
   variant?: 'embedded' | 'persistent';
@@ -31,6 +39,20 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
   const cart = useCart();
   const queryClient = useQueryClient();
   const { data: session } = useSession();
+  const { data: activeVariants } = useActiveRates();
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.api.invoke(IPC_CHANNELS.BILLING.GET_LAST_COMPLETED);
+        if (res && res.success && res.data) {
+          setLastCompletedInvoice(res.data);
+        }
+      } catch (e) {
+        console.error('Failed to fetch last completed bill:', e);
+      }
+    })();
+  }, [setLastCompletedInvoice]);
 
   const [showEditPasswordModal, setShowEditPasswordModal] = useState(false);
   const [editPassword, setEditPassword] = useState('');
@@ -57,6 +79,77 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
       await window.api.invoke('billing:print-receipt', { invoice_id: invoiceId });
     } catch (err: any) {
       console.error('Printing failed:', err);
+    }
+  };
+
+  const navigate = useNavigate();
+
+  const [isSendingWhatsApp, setIsSendingWhatsApp] = useState(false);
+  const [showWhatsAppPhoneModal, setShowWhatsAppPhoneModal] = useState(false);
+  const [whatsAppPhoneInput, setWhatsAppPhoneInput] = useState('');
+  const [whatsAppFeedback, setWhatsAppFeedback] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+
+  const handleSendWhatsApp = async (overridePhone?: string) => {
+    if (!lastCompletedInvoice) return;
+    setIsSendingWhatsApp(true);
+    setWhatsAppFeedback({ type: 'info', text: 'Sending WhatsApp bill in background...' });
+    try {
+      const phoneToUse = (overridePhone || whatsAppPhoneInput).trim();
+      const res = await window.api.invoke(IPC_CHANNELS.BILLING.SEND_WHATSAPP_BILL, {
+        invoice_id: lastCompletedInvoice.invoice.id,
+        customPhone: phoneToUse || undefined,
+      });
+
+      if (res && res.success) {
+        setWhatsAppFeedback({ type: 'success', text: `✓ WhatsApp bill sent to ${res.phone || phoneToUse}!` });
+        setShowWhatsAppPhoneModal(false);
+        setWhatsAppPhoneInput('');
+        // Dispatched automatically in the background - zero tab navigation
+      } else if (res && res.notLoggedIn) {
+        setWhatsAppFeedback({ type: 'error', text: '⚠️ WhatsApp not linked. Please scan QR in WhatsApp tab once.' });
+      } else if (res && res.failureReason && res.failureReason.toLowerCase().includes('phone')) {
+        setShowWhatsAppPhoneModal(true);
+        setWhatsAppFeedback({ type: 'error', text: res.failureReason });
+      } else {
+        setWhatsAppFeedback({ type: 'error', text: `Failed: ${res?.failureReason || 'Could not send WhatsApp bill'}` });
+      }
+    } catch (e: any) {
+      setWhatsAppFeedback({ type: 'error', text: `Error: ${e.message || 'Send failed'}` });
+    } finally {
+      setIsSendingWhatsApp(false);
+      setTimeout(() => setWhatsAppFeedback(null), 7000);
+    }
+  };
+
+  const handleSendTestHi = async (overridePhone?: string) => {
+    if (!lastCompletedInvoice) return;
+    const rawPhone = (overridePhone || lastCompletedInvoice.invoice.customer_phone || (lastCompletedInvoice.customer as any)?.phone || whatsAppPhoneInput).trim();
+    if (!rawPhone) {
+      setShowWhatsAppPhoneModal(true);
+      return;
+    }
+    setIsSendingWhatsApp(true);
+    setWhatsAppFeedback({ type: 'info', text: 'Sending test "Hi" message in background...' });
+    try {
+      let clean = rawPhone.replace(/[^0-9]/g, '');
+      if (clean.length === 10) clean = `91${clean}`;
+      const res = await window.api.invoke(IPC_CHANNELS.WHATSAPP.SEND_MESSAGE, {
+        phone: clean,
+        message: 'Hi! This is a test message from your POS software. WhatsApp connectivity is working successfully! 👍',
+      });
+      if (res && res.success) {
+        setWhatsAppFeedback({ type: 'success', text: `✓ Test "Hi" message sent to +${clean}!` });
+        setShowWhatsAppPhoneModal(false);
+      } else if (res && res.notLoggedIn) {
+        setWhatsAppFeedback({ type: 'error', text: '⚠️ WhatsApp is not linked. Please scan QR code in WhatsApp tab once.' });
+      } else {
+        setWhatsAppFeedback({ type: 'error', text: `Failed: ${res?.failureReason || 'Could not send test message'}` });
+      }
+    } catch (err: any) {
+      setWhatsAppFeedback({ type: 'error', text: `Error: ${err.message || 'Send failed'}` });
+    } finally {
+      setIsSendingWhatsApp(false);
+      setTimeout(() => setWhatsAppFeedback(null), 7000);
     }
   };
 
@@ -242,16 +335,20 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border-subtle/50 font-mono text-[10px]">
-                          {lastCompletedInvoice.items.map((item) => (
-                            <tr key={item.id} className="hover:bg-surface-hover/50">
-                              <td className="px-2 py-1 font-sans font-extrabold text-text-primary text-[10px]">
-                                {item.product_name}
-                                {item.variant_name && item.variant_name !== 'Default' && (
-                                  <span className="text-[8px] font-normal text-text-muted block">
-                                    ({item.variant_name})
-                                  </span>
-                                )}
-                              </td>
+                          {lastCompletedInvoice.items.map((item) => {
+                            const matched = activeVariants?.find((v) => v.id === item.product_variant_id);
+                            const prodName = item.product_name || matched?.product_name || 'Product';
+                            const varName = item.variant_name || matched?.variant_name || '';
+                            return (
+                              <tr key={item.id} className="hover:bg-surface-hover/50">
+                                <td className="px-2 py-1 font-sans font-extrabold text-text-primary text-[10px]">
+                                  {prodName}
+                                  {varName && varName !== 'Default' && varName !== 'Standard' && (
+                                    <span className="text-[8px] font-normal text-text-muted block">
+                                      ({varName})
+                                    </span>
+                                  )}
+                                </td>
                               <td className="px-1.5 py-1 text-center text-text-secondary font-bold">
                                 {item.quantity_grams
                                   ? `${(item.quantity_grams / 1000).toFixed(3)} kg`
@@ -263,8 +360,9 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
                               <td className="px-2 py-1 text-right font-extrabold text-brand-500">
                                 ₹{(item.line_total_paise / 100).toFixed(2)}
                               </td>
-                            </tr>
-                          ))}
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -278,13 +376,36 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
                     </span>
                   </div>
 
+                  {whatsAppFeedback && (
+                    <div
+                      className={`text-[10px] px-2 py-1 rounded border font-bold text-center flex items-center justify-center gap-1.5 ${
+                        whatsAppFeedback.type === 'success'
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                          : whatsAppFeedback.type === 'info'
+                          ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300 animate-pulse'
+                          : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                      }`}
+                    >
+                      {whatsAppFeedback.type === 'info' && <Loader2 size={11} className="animate-spin" />}
+                      <span>{whatsAppFeedback.text}</span>
+                    </div>
+                  )}
+
                   {/* Actions */}
-                  <div className="pt-2 pb-1 border-t border-border-subtle/60 grid grid-cols-3 gap-2">
+                  <div className="pt-2 pb-1 border-t border-border-subtle/60 grid grid-cols-4 gap-1.5">
                     <button
                       onClick={handleReprintClick}
-                      className="py-1.5 px-2 bg-brand-500 hover:bg-brand-600 active:scale-95 text-white rounded-lg text-[11px] font-black transition-all flex items-center justify-center gap-1 shadow-subtle"
+                      className="py-1.5 px-1.5 bg-brand-500 hover:bg-brand-600 active:scale-95 text-white rounded-lg text-[10.5px] font-black transition-all flex items-center justify-center gap-1 shadow-subtle"
                     >
                       <Printer size={12} /> Reprint
+                    </button>
+                    <button
+                      onClick={() => handleSendWhatsApp()}
+                      disabled={isSendingWhatsApp}
+                      className="py-1.5 px-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-[10.5px] font-black transition-all flex items-center justify-center gap-1 shadow-subtle disabled:opacity-50"
+                      title="Send Bill via WhatsApp"
+                    >
+                      {isSendingWhatsApp ? <Loader2 size={12} className="animate-spin" /> : <MessageSquare size={12} />} WhatsApp
                     </button>
                     <button
                       onClick={() => {
@@ -293,7 +414,7 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
                         setShowEditPasswordModal(true);
                       }}
                       disabled={lastCompletedInvoice.invoice.status === 'void'}
-                      className="py-1.5 px-2 bg-surface-card hover:bg-amber-950/40 text-amber-400 border border-amber-800/40 active:scale-95 rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-1 disabled:opacity-40"
+                      className="py-1.5 px-1.5 bg-surface-card hover:bg-amber-950/40 text-amber-400 border border-amber-800/40 active:scale-95 rounded-lg text-[10.5px] font-bold transition-all flex items-center justify-center gap-1 disabled:opacity-40"
                     >
                       <Edit3 size={12} /> Edit
                     </button>
@@ -304,13 +425,24 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
                         setShowVoidConfirmModal(true);
                       }}
                       disabled={lastCompletedInvoice.invoice.status === 'void'}
-                      className="py-1.5 px-2 bg-surface-card hover:bg-rose-950/40 text-rose-400 border border-rose-800/40 active:scale-95 rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-1 disabled:opacity-40"
+                      className="py-1.5 px-1.5 bg-surface-card hover:bg-rose-950/40 text-rose-400 border border-rose-800/40 active:scale-95 rounded-lg text-[10.5px] font-bold transition-all flex items-center justify-center gap-1 disabled:opacity-40"
                     >
                       <Trash2 size={12} /> Void
                     </button>
                   </div>
-                </div>
-              )}
+                  <div className="pt-1 text-center">
+                      <button
+                        type="button"
+                        onClick={() => handleSendTestHi()}
+                        disabled={isSendingWhatsApp}
+                        className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold inline-flex items-center gap-1 hover:underline transition-all"
+                        title="Send sample test 'Hi' to customer to verify connectivity"
+                      >
+                        <Sparkles size={11} /> Send Sample &apos;Hi&apos; to Customer
+                      </button>
+                    </div>
+                  </div>
+                )}
             </div>
           )}
         </div>
@@ -437,15 +569,36 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
             </span>
           </div>
 
-          {/* Action Buttons: Reprint, Edit, Delete */}
-          <div className="pt-2 pb-1 border-t border-border-subtle/60 grid grid-cols-3 gap-2">
+          {whatsAppFeedback && (
+            <div
+              className={`text-xs px-2.5 py-1.5 rounded-lg border font-bold text-center ${
+                whatsAppFeedback.type === 'success'
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+              }`}
+            >
+              {whatsAppFeedback.text}
+            </div>
+          )}
+
+          {/* Action Buttons: Reprint, WhatsApp, Edit, Delete */}
+          <div className="pt-2 pb-1 border-t border-border-subtle/60 grid grid-cols-4 gap-1.5">
             <button
               onClick={handleReprintClick}
-              className="py-2 px-2 bg-brand-500 hover:bg-brand-600 active:scale-95 text-white rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1.5 shadow-subtle"
+              className="py-2 px-1.5 bg-brand-500 hover:bg-brand-600 active:scale-95 text-white rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1 shadow-subtle"
               title="Reprint Thermal Receipt"
             >
               <Printer size={13} />
               Reprint
+            </button>
+            <button
+              onClick={() => handleSendWhatsApp()}
+              disabled={isSendingWhatsApp}
+              className="py-2 px-1.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1 shadow-subtle disabled:opacity-50"
+              title="Send Bill to Customer via WhatsApp"
+            >
+              {isSendingWhatsApp ? <Loader2 size={13} className="animate-spin" /> : <MessageSquare size={13} />}
+              WhatsApp
             </button>
             <button
               onClick={() => {
@@ -454,7 +607,7 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
                 setShowEditPasswordModal(true);
               }}
               disabled={lastCompletedInvoice.invoice.status === 'void'}
-              className="py-2 px-2 bg-surface-card hover:bg-amber-950/40 text-amber-400 border border-amber-800/40 active:scale-95 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1.5 disabled:opacity-40"
+              className="py-2 px-1.5 bg-surface-card hover:bg-amber-950/40 text-amber-400 border border-amber-800/40 active:scale-95 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1 disabled:opacity-40"
               title="Edit Completed Bill (Requires Password)"
             >
               <Edit3 size={13} />
@@ -467,11 +620,23 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
                 setShowVoidConfirmModal(true);
               }}
               disabled={lastCompletedInvoice.invoice.status === 'void'}
-              className="py-2 px-2 bg-surface-card hover:bg-rose-950/40 text-rose-400 border border-rose-800/40 active:scale-95 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1.5 disabled:opacity-40 shadow-sm"
+              className="py-2 px-1.5 bg-surface-card hover:bg-rose-950/40 text-rose-400 border border-rose-800/40 active:scale-95 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-1 disabled:opacity-40 shadow-sm"
               title="Void / Delete Completed Bill (Requires Confirmation)"
             >
               <Trash2 size={13} />
               Delete
+            </button>
+          </div>
+
+          <div className="pt-1 pb-0.5 text-center">
+            <button
+              type="button"
+              onClick={() => handleSendTestHi()}
+              disabled={isSendingWhatsApp}
+              className="text-xs text-emerald-400 hover:text-emerald-300 font-bold inline-flex items-center gap-1.5 hover:underline transition-all"
+              title="Send sample test 'Hi' to customer to verify connectivity"
+            >
+              <Sparkles size={12} /> Send Sample &apos;Hi&apos; to Customer
             </button>
           </div>
         </div>
@@ -631,6 +796,23 @@ export default function LastBillStatusPanel({ variant = 'embedded' }: LastBillSt
           <ReprintLookupModal
             onClose={() => setShowReprintLookupModal(false)}
             onPrintReceipt={handlePrintReceiptById}
+          />
+        )}
+
+        {/* WhatsApp Phone Prompt Modal */}
+        {lastCompletedInvoice && (
+          <WhatsAppPhoneModal
+            isOpen={showWhatsAppPhoneModal}
+            invoiceId={lastCompletedInvoice.invoice.id}
+            invoiceNumber={lastCompletedInvoice.invoice.invoice_number}
+            customerId={lastCompletedInvoice.invoice.customer_id}
+            customerName={lastCompletedInvoice.customer?.name}
+            initialPhone={lastCompletedInvoice.customer?.whatsapp || lastCompletedInvoice.customer?.phone || ''}
+            onClose={() => setShowWhatsAppPhoneModal(false)}
+            onSuccess={() => {
+              setWhatsAppFeedback({ type: 'success', text: '✓ Bill queued for WhatsApp delivery!' });
+              setTimeout(() => setWhatsAppFeedback(null), 5000);
+            }}
           />
         )}
       </>

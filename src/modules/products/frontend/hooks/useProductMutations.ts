@@ -9,6 +9,9 @@ function useInvalidateAll() {
     queryClient.invalidateQueries({ queryKey: ['billing', 'products'] });
     queryClient.invalidateQueries({ queryKey: ['inventory'] }); // catches stock, low-stock, transactions, adjustments
     queryClient.invalidateQueries({ queryKey: ['admin', 'products'] });
+    queryClient.invalidateQueries({ queryKey: ['admin', 'rate-history'] });
+    queryClient.invalidateQueries({ queryKey: ['admin', 'product-rate-history'] });
+    queryClient.invalidateQueries({ queryKey: ['products'] });
   };
 }
 
@@ -110,6 +113,54 @@ export function useDeleteProduct() {
   return useMutation({
     mutationFn: async (id: number) => {
       const res = await window.api.invoke(IPC_CHANNELS.PRODUCTS.DELETE, { id });
+      if (!res.success) throw new Error(res.error.message);
+      return res.data;
+    },
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeactivateCategory() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: async (category: string) => {
+      const res = await window.api.invoke(IPC_CHANNELS.PRODUCTS.DEACTIVATE_CATEGORY, { category });
+      if (!res.success) throw new Error(res.error.message);
+      return res.data;
+    },
+    onSuccess: invalidate,
+  });
+}
+
+export function useReactivateCategory() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: async (category: string) => {
+      const res = await window.api.invoke(IPC_CHANNELS.PRODUCTS.REACTIVATE_CATEGORY, { category });
+      if (!res.success) throw new Error(res.error.message);
+      return res.data;
+    },
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteCategory() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: async (category: string) => {
+      const res = await window.api.invoke(IPC_CHANNELS.PRODUCTS.DELETE_CATEGORY, { category });
+      if (!res.success) throw new Error(res.error.message);
+      return res.data;
+    },
+    onSuccess: invalidate,
+  });
+}
+
+export function useRestoreDeletedProduct() {
+  const invalidate = useInvalidateAll();
+  return useMutation({
+    mutationFn: async (archiveId: number) => {
+      const res = await window.api.invoke(IPC_CHANNELS.PRODUCTS.RESTORE_DELETED, { archiveId });
       if (!res.success) throw new Error(res.error.message);
       return res.data;
     },

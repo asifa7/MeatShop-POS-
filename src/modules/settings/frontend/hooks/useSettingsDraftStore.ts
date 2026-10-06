@@ -16,12 +16,28 @@ export type SettingsCategoryId =
   | 'hardware'
   | 'appearance'
   | 'shortcuts'
-  | 'system_data';
+  | 'system_data'
+  | 'whatsapp';
 
 export interface YieldRatiosDraft {
   chickenWholeRatio: number;
   chickenBonelessRatio: number;
   goatLiveToDressedPercent: number;
+}
+
+function getStoredReceiptTemplate(): any {
+  try {
+    const raw = localStorage.getItem('pos_printer_receipt_template');
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return {};
+}
+
+function persistReceiptTemplate(tmpl?: any) {
+  if (!tmpl) return;
+  try {
+    localStorage.setItem('pos_printer_receipt_template', JSON.stringify(tmpl));
+  } catch (e) {}
 }
 
 export const DEFAULT_APP_CONFIG_DRAFT: AppConfig = {
@@ -113,6 +129,44 @@ export const DEFAULT_APP_CONFIG_DRAFT: AppConfig = {
     showDiscount: true,
     showCashier: true,
     showCustomer: true,
+    leftMarginMm: 0,
+    topMarginMm: 0,
+    rightMarginMm: 8,
+    fontFamily: 'Consolas',
+    fontSize: 'medium',
+    headerAlignment: 'left',
+    itemWidthPercent: 40,
+    qtyWidthPercent: 20,
+    rateWidthPercent: 20,
+    amountWidthPercent: 20,
+    billPrintClosingBalance: true,
+    cardBillDouble: false,
+    subBillPrint: false,
+    cashDrawerOpen: false,
+    tamilFont: false,
+    splitAmount: false,
+    cashTender: false,
+    customerCredit: false,
+    crmPoints: false,
+    dosPrinter: false,
+    discountEveryLine: false,
+    noOfBillPrint: 1,
+    secondBillDelayMs: 100,
+    duplicateCopyLabel: 'Duplicate Copy',
+    topSlogan: '',
+    addressLine1: '',
+    addressLine2: '',
+    city: '',
+    pinCode: '',
+    footerCondition1: '',
+    footerCondition2: '',
+    footerCondition3: '',
+    footerMsg1: '',
+    footerMsg2: '',
+    softwareMobileNo: '',
+    whatsAppSendMode: 'direct',
+    whatsAppMetaApiKey: '',
+    whatsAppMetaPhoneId: '',
   },
   billingSettings: {
     skipPaymentConfirmation: false,
@@ -123,6 +177,14 @@ export const DEFAULT_APP_CONFIG_DRAFT: AppConfig = {
     backupDir: '',
     autoBackupOnClose: true,
     maxBackupsToKeep: 7,
+  },
+  whatsAppConfig: {
+    maxRetries: 3,
+    retryBackoffSeconds: 30,
+    billCaptionTemplate:
+      "🧾 *{shopName}*\nDear *{customerName}*, greetings from {shopName}! 🙏\n\n📄 *Bill No:* {billNo}\n💰 *Bill Total:* ₹{netAmount}\n📅 *Date:* {date}\n\nAttached is your digital bill receipt. Thank you for choosing us! ✨",
+    deliveryMessageTemplate:
+      "🛵 *Order Confirmed - Will deliver shortly!*\nDear *{customerName}*, your order (#{billNo}) is freshly prepared and out for delivery shortly. Thank you! 🙏",
   },
 };
 
@@ -201,24 +263,46 @@ export const useSettingsDraftStore = create<SettingsDraftState>((set) => ({
   setSearchQuery: (searchQuery) => set({ searchQuery }),
 
   initBaselines: (config, appearance, shortcuts, yieldRatios) => {
-    set({
-      originalConfig: config,
-      originalAppearance: appearance,
-      originalShortcuts: shortcuts,
-      originalYieldRatios: yieldRatios,
-      draftConfig: JSON.parse(JSON.stringify(config)),
-      draftAppearance: JSON.parse(JSON.stringify(appearance)),
-      draftShortcuts: JSON.parse(JSON.stringify(shortcuts)),
-      draftYieldRatios: JSON.parse(JSON.stringify(yieldRatios)),
-      isDirty: false,
-      saveStatus: 'idle',
-      errorMessage: null,
+    set((state) => {
+      const storedTmpl = getStoredReceiptTemplate();
+      const mergedConfig = JSON.parse(JSON.stringify(config));
+      mergedConfig.receiptTemplate = {
+        ...DEFAULT_APP_CONFIG_DRAFT.receiptTemplate,
+        ...storedTmpl,
+        ...(mergedConfig.receiptTemplate || {}),
+      };
+
+      // If user has unsaved changes in the draft, preserve their changes across tab switches
+      if (state.isDirty) {
+        return {
+          originalConfig: mergedConfig,
+          originalAppearance: appearance,
+          originalShortcuts: shortcuts,
+          originalYieldRatios: yieldRatios,
+        };
+      }
+      return {
+        originalConfig: mergedConfig,
+        originalAppearance: appearance,
+        originalShortcuts: shortcuts,
+        originalYieldRatios: yieldRatios,
+        draftConfig: mergedConfig,
+        draftAppearance: JSON.parse(JSON.stringify(appearance)),
+        draftShortcuts: JSON.parse(JSON.stringify(shortcuts)),
+        draftYieldRatios: JSON.parse(JSON.stringify(yieldRatios)),
+        isDirty: false,
+        saveStatus: 'idle',
+        errorMessage: null,
+      };
     });
   },
 
   updateDraftConfig: (updater) => {
     set((state) => {
       const next = updater(state.draftConfig);
+      if (next.receiptTemplate) {
+        persistReceiptTemplate(next.receiptTemplate);
+      }
       return {
         draftConfig: next,
         isDirty: true,
@@ -297,6 +381,7 @@ export const useSettingsDraftStore = create<SettingsDraftState>((set) => ({
           break;
         case 'hardware':
           draftConfig.hardware = { ...DEFAULT_APP_CONFIG_DRAFT.hardware };
+          draftConfig.receiptTemplate = { ...DEFAULT_APP_CONFIG_DRAFT.receiptTemplate! };
           break;
         case 'appearance':
           draftAppearance = { ...DEFAULT_APPEARANCE_DRAFT };

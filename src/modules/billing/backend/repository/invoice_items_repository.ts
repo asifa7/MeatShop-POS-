@@ -13,14 +13,18 @@ export interface InvoiceItemRow {
   override_applied: number;
   override_reason: string | null;
   overridden_by: number | null;
+  stock_source?: string;
+  refrigerator_stock_id?: number | null;
 }
 
 export interface InvoiceItemWithDetails extends InvoiceItemRow {
   variant_name: string;
   product_name: string;
   product_code: string;
-  unit_type: 'weight' | 'piece';
+  unit_type: 'weight' | 'piece' | 'live_dual';
   category: string;
+  stock_source?: string;
+  refrigerator_stock_id?: number | null;
 }
 
 export interface CreateInvoiceItemInput {
@@ -35,6 +39,8 @@ export interface CreateInvoiceItemInput {
   override_applied: boolean;
   override_reason: string | null;
   overridden_by: number | null;
+  stock_source?: string;
+  refrigerator_stock_id?: number | null;
 }
 
 const invoiceItemsRepository = {
@@ -43,14 +49,14 @@ const invoiceItemsRepository = {
       SELECT ii.*,
         pv.variant_name,
         p.name AS product_name,
-        p.product_code,
+        COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS product_code,
         p.unit_type,
         p.category
       FROM invoice_items ii
-      JOIN product_variants pv ON ii.product_variant_id = pv.id
-      JOIN products p ON pv.product_id = p.id
+      LEFT JOIN product_variants pv ON ii.product_variant_id = pv.id
+      LEFT JOIN products p ON pv.product_id = p.id
       WHERE ii.invoice_id = ?
-      ORDER BY ii.id
+      ORDER BY ii.id ASC
     `).all(invoiceId) as InvoiceItemWithDetails[];
   },
 
@@ -59,23 +65,28 @@ const invoiceItemsRepository = {
   },
 
   create(input: CreateInvoiceItemInput): InvoiceItemRow {
+    const stockSource = input.stock_source || 'none';
     const result = db.prepare(`
       INSERT INTO invoice_items (
         invoice_id, product_variant_id,
         quantity_grams, quantity_units,
         rate_paise_snapshot, line_subtotal_paise,
         gst_rate_percent_snapshot, line_total_paise,
-        override_applied, override_reason, overridden_by
+        override_applied, override_reason, overridden_by,
+        stock_source, refrigerator_stock_id
       ) VALUES (
         @invoice_id, @product_variant_id,
         @quantity_grams, @quantity_units,
         @rate_paise_snapshot, @line_subtotal_paise,
         @gst_rate_percent_snapshot, @line_total_paise,
-        @override_applied, @override_reason, @overridden_by
+        @override_applied, @override_reason, @overridden_by,
+        @stock_source, @refrigerator_stock_id
       )
     `).run({
       ...input,
       override_applied: input.override_applied ? 1 : 0,
+      stock_source: stockSource,
+      refrigerator_stock_id: input.refrigerator_stock_id ?? null,
     });
     return db.prepare('SELECT * FROM invoice_items WHERE id = ?').get(result.lastInsertRowid) as InvoiceItemRow;
   },

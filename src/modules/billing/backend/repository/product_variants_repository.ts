@@ -5,6 +5,7 @@ export interface ProductVariantRow {
   id: number;
   product_id: number;
   variant_name: string;
+  product_code?: string;
   current_rate_paise_per_unit: number;
   cost_price_paise_per_unit?: number;
   barcode?: string | null;
@@ -43,17 +44,17 @@ export interface CreateVariantInput {
 const productVariantsRepository = {
   findAllActive(): ProductVariantWithProduct[] {
     return db.prepare(`
-      SELECT pv.*, p.product_code, p.name AS product_name, p.unit_type, p.category
+      SELECT pv.*, COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS product_code, p.name AS product_name, p.unit_type, p.category
       FROM product_variants pv
       JOIN products p ON pv.product_id = p.id
       WHERE pv.is_active = 1 AND p.is_active = 1
-      ORDER BY p.category, p.name, pv.variant_name
+      ORDER BY CAST(COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS INTEGER) ASC
     `).all() as ProductVariantWithProduct[];
   },
 
   findById(id: number): ProductVariantWithProduct {
     const row = db.prepare(`
-      SELECT pv.*, p.product_code, p.name AS product_name, p.unit_type, p.category
+      SELECT pv.*, COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS product_code, p.name AS product_name, p.unit_type, p.category
       FROM product_variants pv
       JOIN products p ON pv.product_id = p.id
       WHERE pv.id = ?
@@ -62,6 +63,16 @@ const productVariantsRepository = {
       throw new NotFoundError(`Product variant with id ${id} not found`);
     }
     return row;
+  },
+
+  findByCode(code: string): ProductVariantWithProduct | null {
+    const row = db.prepare(`
+      SELECT pv.*, COALESCE(pv.product_code, CAST(pv.id AS TEXT)) AS product_code, p.name AS product_name, p.unit_type, p.category
+      FROM product_variants pv
+      JOIN products p ON pv.product_id = p.id
+      WHERE (pv.product_code = ? OR CAST(pv.id AS TEXT) = ?) AND pv.is_active = 1 AND p.is_active = 1
+    `).get(code, code) as ProductVariantWithProduct | undefined;
+    return row || null;
   },
 
   /** Returns active variants for a product (for Billing use) */
@@ -170,8 +181,67 @@ const productVariantsRepository = {
    * Hard-deletes a variant and its rate history. Only call after confirming hasInvoiceHistory returns false.
    */
   hardDelete(id: number): void {
-    db.prepare('DELETE FROM product_variant_rate_history WHERE product_variant_id = ?').run(id);
-    db.prepare('DELETE FROM product_variants WHERE id = ?').run(id);
+    const deleteTx = db.transaction(() => {
+      // Nullify parent_variant_id references
+      db.prepare('UPDATE product_variants SET parent_variant_id = NULL WHERE parent_variant_id = ?').run(id);
+
+      const tables = [
+        'stock_ledger',
+        'stock_transactions',
+        'product_stock_batches',
+        'inventory_ledger',
+        'purchases',
+        'purchase_invoice_items',
+        'goods_receipt_items',
+        'purchase_return_items',
+        'purchase_order_items',
+        'supplier_price_history',
+        'pending_stock_events',
+        'legacy_negative_stock_review',
+        'oversold_unreconciled',
+        'sales_return_items',
+        'yield_processing_runs',
+        'yield_processing_outputs',
+        'stock_transfer_items',
+        'bulk_orders',
+        'stock_adjustments',
+        'daily_inventory_reconciliations',
+        'physical_stock_audit_items',
+        'invoice_items',
+        'product_variant_rate_history',
+      ];
+
+      // Get parent product ID before deleting
+      const vRow = db.prepare('SELECT product_id FROM product_variants WHERE id = ?').get(id) as { product_id: number } | undefined;
+      const parentProductId = vRow?.product_id;
+
+      for (const t of tables) {
+        try {
+          db.prepare(`DELETE FROM ${t} WHERE product_variant_id = ?`).run(id);
+        } catch (e) {
+          try {
+            db.prepare(`DELETE FROM ${t} WHERE variant_id = ?`).run(id);
+          } catch (e2) {}
+        }
+      }
+      try {
+        db.prepare('DELETE FROM sales_returns WHERE replacement_variant_id = ?').run(id);
+      } catch (e) {}
+
+      db.prepare('DELETE FROM product_variants WHERE id = ?').run(id);
+
+      // If parent product has no more variants, remove parent product cleanly
+      if (parentProductId) {
+        const remaining = db.prepare('SELECT COUNT(*) as cnt FROM product_variants WHERE product_id = ?').get(parentProductId) as { cnt: number };
+        if (remaining.cnt === 0) {
+          try { db.prepare('DELETE FROM product_tracking_change_log WHERE product_id = ?').run(parentProductId); } catch (e) {}
+          try { db.prepare('DELETE FROM inventory_ledger WHERE product_id = ?').run(parentProductId); } catch (e) {}
+          try { db.prepare('DELETE FROM customer_intelligence_cache WHERE product_id = ?').run(parentProductId); } catch (e) {}
+          db.prepare('DELETE FROM products WHERE id = ?').run(parentProductId);
+        }
+      }
+    });
+    deleteTx();
   },
 
   syncVariantCostCache(variantId: number): void {

@@ -58,7 +58,7 @@ export default function InventoryView() {
 
   // Navigation State
   const [primaryTab, setPrimaryTab] = useState<PrimaryTab>('stock');
-  const [subTab, setSubTab] = useState<string>('status'); // default for stock is 'status'
+  const [subTab, setSubTab] = useState<string>('status'); // default for stock is 'status' (All Stock Levels)
 
   // Location Filter State
   const [selectedLocationId, setSelectedLocationId] = useState<string>('all');
@@ -104,9 +104,6 @@ export default function InventoryView() {
   const categories = ['All', ...new Set((stocks || []).map(s => s.category))];
 
   const filteredStocks = (stocks || []).filter(item => {
-    // Hide processed cuts and auto-yield items since they don't hold physical stock
-    if (item.is_processed_cut === 1 || item.parent_variant_id) return false;
-
     const matchesSearch = searchTerm === '' ||
       item.product_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       item.variant_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -230,25 +227,25 @@ export default function InventoryView() {
             <>
               <button
                 onClick={() => handleSubTabClick('status')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                  subTab === 'status' ? 'bg-surface-card text-brand-500 border border-border-subtle' : 'text-text-muted hover:text-text-primary'
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  subTab === 'status' ? 'bg-surface-card text-brand-500 border border-border-subtle shadow-sm font-extrabold' : 'text-text-muted hover:text-text-primary'
                 }`}
               >
-                <Layers size={13} /> Stock Levels
+                <Box size={14} className="text-brand-500" /> All Stock Levels
               </button>
 
               <button
                 onClick={() => handleSubTabClick('refrigerator')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                  subTab === 'refrigerator' ? 'bg-surface-card text-brand-500 border border-border-subtle' : 'text-text-muted hover:text-text-primary'
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  subTab === 'refrigerator' ? 'bg-surface-card text-blue-400 border border-border-subtle shadow-sm font-extrabold' : 'text-text-muted hover:text-text-primary'
                 }`}
               >
-                <Snowflake size={13} /> Refrigerator Stock
+                <Snowflake size={14} className="text-blue-400" /> Refrigerator Stock
               </button>
 
               <button
                 onClick={() => handleSubTabClick('transfers')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
                   subTab === 'transfers' ? 'bg-surface-card text-brand-500 border border-border-subtle' : 'text-text-muted hover:text-text-primary'
                 }`}
               >
@@ -256,15 +253,8 @@ export default function InventoryView() {
               </button>
 
               <button
-                onClick={() => setIsLivestockModalOpen(true)}
-                className="px-3 py-1.5 rounded-lg text-xs font-bold text-rose-400 bg-rose-500/10 hover:bg-rose-500 hover:text-white transition-all flex items-center gap-1.5 border border-rose-500/20"
-              >
-                <Bird size={13} /> Log Dead Stock
-              </button>
-
-              <button
                 onClick={() => handleSubTabClick('physical_count')}
-                className="px-3 py-1.5 rounded-lg text-xs font-bold text-text-muted hover:text-text-primary transition-all flex items-center gap-1.5"
+                className="px-3 py-1.5 rounded-lg text-xs font-bold text-text-muted hover:text-text-primary transition-all flex items-center gap-1.5 cursor-pointer"
               >
                 <ClipboardCheck size={13} /> Physical Stock Count
               </button>

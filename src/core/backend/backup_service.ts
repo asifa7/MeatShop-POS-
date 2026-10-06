@@ -3,11 +3,14 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { app } from 'electron';
 import { logger } from './logger';
+import Database from 'better-sqlite3';
+import { databaseProvider } from '../database/database_provider';
 
 export const backupService = {
   /**
    * Safe SQLite database backup using better-sqlite3 native backup API.
    * Isolates active locks/transactions and is WAL-safe.
+   * Immediately verifies integrity of written backup file.
    */
   async backupDatabase(customPath?: string): Promise<string> {
     try {
@@ -15,7 +18,7 @@ export const backupService = {
       if (customPath) {
         destDir = customPath;
       } else {
-        const userData = app.getPath('userData');
+        const userData = app?.getPath ? app.getPath('userData') : path.join(process.cwd(), 'backups');
         destDir = path.join(userData, 'backups');
       }
 
@@ -31,22 +34,38 @@ export const backupService = {
 
       logger.info('Starting WAL-safe SQLite database backup...', { destination: destFile });
       await db.backup(destFile);
+
+      // Verify integrity of the backup file immediately after writing
+      const verifyDb = new Database(destFile, { readonly: true });
+      try {
+        const check = verifyDb.pragma('integrity_check') as Array<{ integrity_check: string }>;
+        const status = check?.[0]?.integrity_check;
+        if (status !== 'ok') {
+          throw new Error(`Backup file failed integrity check: ${JSON.stringify(check)}`);
+        }
+        logger.info('Backup integrity check passed (ok)', { destination: destFile });
+      } finally {
+        verifyDb.close();
+      }
+
       logger.info('Database backup completed successfully', { destination: destFile });
       
       // Backup bills folder
-      const billsDirSource = path.join(app.getPath('userData'), 'documents', 'bills');
-      if (fs.existsSync(billsDirSource)) {
-        const destBillsDir = path.join(destDir, `bills-${dateStr}`);
-        fs.cpSync(billsDirSource, destBillsDir, { recursive: true });
-        logger.info('Bills directory backed up successfully', { destination: destBillsDir });
-      }
+      if (app?.getPath) {
+        const billsDirSource = path.join(app.getPath('userData'), 'documents', 'bills');
+        if (fs.existsSync(billsDirSource)) {
+          const destBillsDir = path.join(destDir, `bills-${dateStr}`);
+          fs.cpSync(billsDirSource, destBillsDir, { recursive: true });
+          logger.info('Bills directory backed up successfully', { destination: destBillsDir });
+        }
 
-      // Backup customer snapshots folder (for facial recognition reference photos)
-      const snapshotsDirSource = path.join(app.getPath('userData'), 'documents', 'customer_snapshots');
-      if (fs.existsSync(snapshotsDirSource)) {
-        const destSnapshotsDir = path.join(destDir, `snapshots-${dateStr}`);
-        fs.cpSync(snapshotsDirSource, destSnapshotsDir, { recursive: true });
-        logger.info('Customer snapshots directory backed up successfully', { destination: destSnapshotsDir });
+        // Backup customer snapshots folder (for facial recognition reference photos)
+        const snapshotsDirSource = path.join(app.getPath('userData'), 'documents', 'customer_snapshots');
+        if (fs.existsSync(snapshotsDirSource)) {
+          const destSnapshotsDir = path.join(destDir, `snapshots-${dateStr}`);
+          fs.cpSync(snapshotsDirSource, destSnapshotsDir, { recursive: true });
+          logger.info('Customer snapshots directory backed up successfully', { destination: destSnapshotsDir });
+        }
       }
 
       // Post-backup cleanup (retain only last 7 backups)
@@ -55,6 +74,87 @@ export const backupService = {
       return destFile;
     } catch (err) {
       logger.error('Failed to backup database', err);
+      throw err;
+    }
+  },
+
+  /**
+   * Restores database from a given backup file.
+   * 1. Validates backup file existence & runs PRAGMA integrity_check.
+   * 2. Safely closes live DB connection.
+   * 3. Cleans up live WAL/SHM files and copies backup over live DB.
+   * 4. Reopens DB connection and runs PRAGMA integrity_check on live connection.
+   */
+  async restoreDatabase(backupFilePath: string): Promise<{ success: boolean; liveDbPath: string; integrity: string }> {
+    try {
+      if (!fs.existsSync(backupFilePath)) {
+        throw new Error(`Backup file not found at: ${backupFilePath}`);
+      }
+
+      logger.info('Validating backup file integrity before restore...', { backupFilePath });
+      const verifyDb = new Database(backupFilePath, { readonly: true });
+      try {
+        const check = verifyDb.pragma('integrity_check') as Array<{ integrity_check: string }>;
+        const status = check?.[0]?.integrity_check;
+        if (status !== 'ok') {
+          throw new Error(`Cannot restore: Backup file integrity check failed: ${JSON.stringify(check)}`);
+        }
+        logger.info('Backup file integrity check passed (ok)');
+      } finally {
+        verifyDb.close();
+      }
+
+      const liveDbPath = databaseProvider.getDbPath();
+      logger.info('Closing active database connection for restore...', { liveDbPath });
+      databaseProvider.close();
+
+      // Clean up WAL and SHM files if they exist to prevent WAL replay corruption
+      const walPath = `${liveDbPath}-wal`;
+      const shmPath = `${liveDbPath}-shm`;
+      if (fs.existsSync(walPath)) {
+        try {
+          fs.unlinkSync(walPath);
+        } catch (e) {
+          try {
+            fs.writeFileSync(walPath, Buffer.alloc(0));
+          } catch (truncateErr) {
+            logger.warn('Failed to delete/truncate WAL file during restore', { error: String(e) });
+          }
+        }
+      }
+      if (fs.existsSync(shmPath)) {
+        try {
+          fs.unlinkSync(shmPath);
+        } catch (e) {
+          try {
+            fs.writeFileSync(shmPath, Buffer.alloc(0));
+          } catch (truncateErr) {
+            logger.warn('Failed to delete/truncate SHM file during restore', { error: String(e) });
+          }
+        }
+      }
+
+      // Copy backup over live DB file
+      logger.info('Copying backup file over live database...', { from: backupFilePath, to: liveDbPath });
+      fs.copyFileSync(backupFilePath, liveDbPath);
+
+      // Reopen connection
+      logger.info('Reopening database connection...');
+      const reconnectedDb = databaseProvider.reopen();
+
+      // Verify restored live database integrity
+      const liveCheck = reconnectedDb.pragma('integrity_check') as Array<{ integrity_check: string }>;
+      const liveStatus = liveCheck?.[0]?.integrity_check || 'unknown';
+      if (liveStatus !== 'ok') {
+        throw new Error(`Restored live database failed integrity check: ${JSON.stringify(liveCheck)}`);
+      }
+
+      logger.info('Database restored successfully and live integrity verified (ok)', { liveDbPath, integrity: liveStatus });
+      return { success: true, liveDbPath, integrity: liveStatus };
+    } catch (err) {
+      logger.error('Failed to restore database', err);
+      // Attempt reconnection if closed
+      try { databaseProvider.getRawConnection(); } catch {}
       throw err;
     }
   },

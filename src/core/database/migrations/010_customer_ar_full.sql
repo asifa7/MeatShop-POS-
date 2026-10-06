@@ -98,10 +98,10 @@ SELECT
 FROM customers_stub_backup;
 
 -- Step 4: Update the invoice FK references — they point to id so they remain valid.
--- (No action needed; invoices.customer_id → customers.id is still valid.)
+-- (No action needed - invoices.customer_id -> customers.id is still valid.)
 
 -- Step 5: We keep the stub as backup in case of rollback debugging
--- DROP TABLE customers_stub_backup; -- leave as backup
+-- DROP TABLE customers_stub_backup - leave as backup
 
 -- ─── Customer Credit Accounts ─────────────────────────────────
 CREATE TABLE IF NOT EXISTS customer_credit_accounts (

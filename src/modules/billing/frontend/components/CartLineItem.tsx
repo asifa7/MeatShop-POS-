@@ -3,6 +3,7 @@ import { Trash2, ShieldAlert, Layers } from 'lucide-react';
 import type { InvoiceItem } from '../types/billing.types';
 import { formatPaise } from '../types/billing.types';
 import { useAppearance } from '../../../../core/theme/AppearanceContext';
+import { useActiveRates } from '../hooks/useActiveRates';
 
 interface CartLineItemProps {
   item: InvoiceItem;
@@ -18,9 +19,16 @@ interface CartLineItemProps {
 
 export default function CartLineItem({ item, index, onSetQuantity, onRemove, removing, onOpenBatchPicker }: CartLineItemProps) {
   const { config } = useAppearance();
+  const { data: variants } = useActiveRates();
+  const matchedVariant = variants?.find(v => v.id === item.product_variant_id);
+
+  const productName = item.product_name || matchedVariant?.product_name || 'Product';
+  const variantName = item.variant_name || matchedVariant?.variant_name || '';
+  const unitType = item.unit_type || matchedVariant?.unit_type || (item.quantity_grams !== null ? 'weight' : 'piece');
+
   const cartMode = config.cartDisplay || 'detailed';
 
-  const isWeight = item.unit_type === 'weight' || item.unit_type === 'live_dual';
+  const isWeight = unitType === 'weight' || unitType === 'live_dual';
   const quantity = isWeight ? (item.quantity_grams ?? 0) / 1000 : item.quantity_units ?? 0;
   const amount = item.line_subtotal_paise / 100;
   const [quantityInput, setQuantityInput] = useState(String(quantity));
@@ -71,8 +79,13 @@ export default function CartLineItem({ item, index, onSetQuantity, onRemove, rem
         <div className="flex items-center gap-1 min-w-0 flex-1 truncate">
           <span className="text-[9px] font-mono text-text-muted w-3 flex-shrink-0">{(index + 1)}</span>
           <span className="font-extrabold text-text-primary truncate text-[11px]">
-            {item.product_name}
+            {productName} {variantName && variantName !== 'Default' && variantName !== 'Standard' ? `— ${variantName}` : ''}
           </span>
+          {item.stock_source === 'refrigerator' && (
+            <span className="px-1 py-0.2 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30 text-[8.5px] font-black flex-shrink-0">
+              🧊 Fridge
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -115,7 +128,14 @@ export default function CartLineItem({ item, index, onSetQuantity, onRemove, rem
       <div className={`bg-surface-card border rounded-md px-2.5 py-1.5 flex items-center justify-between gap-2 transition-all ${item.override_applied ? 'border-amber-500/50 bg-amber-950/20' : 'border-border-subtle'}`}>
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <span className="text-[10px] font-bold text-text-muted font-mono">{(index + 1).toString().padStart(2, '0')}</span>
-          <span className="text-xs font-extrabold text-text-primary truncate">{item.product_name}</span>
+          <span className="text-xs font-extrabold text-text-primary truncate">
+            {productName} {variantName && variantName !== 'Default' && variantName !== 'Standard' ? `— ${variantName}` : ''}
+          </span>
+          {item.stock_source === 'refrigerator' && (
+            <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30 text-[9px] font-black flex-shrink-0">
+              🧊 Fridge
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -159,12 +179,17 @@ export default function CartLineItem({ item, index, onSetQuantity, onRemove, rem
       {/* Product Info */}
       <div className="flex items-center gap-1.5 min-w-0 flex-1">
         <span className="text-[10px] font-bold text-text-muted w-4 font-mono flex-shrink-0">{(index + 1).toString().padStart(2, '0')}</span>
-        <div className="min-w-0 flex-1 truncate flex items-center gap-1">
+        <div className="min-w-0 flex-1 truncate flex items-center gap-1.5">
           <span className="text-xs font-extrabold text-text-primary truncate">
-            {item.product_name}
+            {productName}
           </span>
-          {item.variant_name && item.variant_name !== 'Default' && (
-            <span className="text-[10px] font-medium text-text-muted truncate">({item.variant_name})</span>
+          {variantName && variantName !== 'Default' && variantName !== 'Standard' && (
+            <span className="text-[11px] font-bold text-brand-500 truncate">({variantName})</span>
+          )}
+          {item.stock_source === 'refrigerator' && (
+            <span className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30 text-[9px] font-black flex-shrink-0">
+              🧊 Fridge Item
+            </span>
           )}
           {item.override_applied === 1 && (
             <span title={`Rate Override: ${item.override_reason}`}>

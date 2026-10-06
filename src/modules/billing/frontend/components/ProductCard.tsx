@@ -33,6 +33,11 @@ export default function ProductCard({ variant, quickNumber, selected, onClick }:
     setIsHovered(false);
   };
 
+  const codeDisplay = variant.product_code || quickNumber;
+  const isWeight = variant.unit_type === 'weight' || variant.unit_type === 'live_dual';
+  const unitLabel = isWeight ? '/kg' : '/pc';
+  const priceDisplay = `₹${(variant.current_rate_paise_per_unit / 100).toFixed(0)}${unitLabel}`;
+
   return (
     <button
       onClick={onClick}
@@ -49,8 +54,8 @@ export default function ProductCard({ variant, quickNumber, selected, onClick }:
           <IconComponent size={14} className="text-brand-500 flex-shrink-0" />
           <span className="text-[9px] font-bold uppercase tracking-wider text-text-muted truncate">{variant.category}</span>
         </div>
-        <span className="flex items-center justify-center min-w-6 h-5 px-1 rounded bg-surface-panel border border-border-subtle text-text-primary text-[10px] font-mono font-bold flex-shrink-0">
-          {quickNumber}
+        <span className="flex items-center justify-center min-w-6 h-5 px-1.5 rounded bg-surface-panel border border-border-subtle text-brand-500 text-[11px] font-mono font-extrabold flex-shrink-0">
+          #{codeDisplay}
         </span>
       </div>
 
@@ -73,7 +78,10 @@ export default function ProductCard({ variant, quickNumber, selected, onClick }:
         <p className="text-[10px] text-text-muted font-semibold truncate mt-0.5">{variant.variant_name}</p>
       </div>
 
-      <span className="text-[9px] text-text-muted font-bold uppercase flex-shrink-0">Quick number {quickNumber}</span>
+      <div className="w-full flex items-center justify-between text-[9px] font-bold uppercase flex-shrink-0 pt-1 border-t border-border-subtle/40">
+        <span className="text-brand-500 font-mono">{priceDisplay}</span>
+        <span className="text-text-muted font-mono font-bold">Code #{codeDisplay}</span>
+      </div>
     </button>
   );
 }

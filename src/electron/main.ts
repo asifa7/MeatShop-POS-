@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, session, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { logger } from '../core/backend/logger';
-import { configManager, config } from '../core/backend/config';
+import { configService } from '../core/config/config_service';
 import { db } from '../core/backend/db';
+import { databaseProvider } from '../core/database/database_provider';
 import { migrationEngine } from '../core/backend/migrations';
 import { IPC_CHANNELS } from '../core/ipc/channels';
 import { handleIPCRequest } from '../core/backend/errors';
@@ -19,6 +20,8 @@ import { authService } from '../modules/auth/backend/service/auth_service';
 import { reportsService } from '../modules/reports/backend/service/reports_service';
 import { backupService } from '../core/backend/backup_service';
 import { receiptService } from '../modules/billing/backend/service/receipt_service';
+import { whatsAppService } from '../modules/billing/backend/service/whatsapp_service';
+import { baileysWhatsAppService } from './baileys_whatsapp_service';
 import { customerService } from '../modules/customers/backend/service/customer_service';
 import { creditService } from '../modules/customers/backend/service/credit_service';
 import { customerIntelligenceService } from '../modules/customers/backend/service/customer_intelligence_service';
@@ -172,6 +175,7 @@ async function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      webviewTag: true,
     },
   });
 
@@ -261,11 +265,11 @@ function registerIpcHandlers() {
 
   // Configuration Handlers
   secureIpcHandle(IPC_CHANNELS.CONFIG.GET, () => {
-    return handleIPCRequest(() => configManager.get());
+    return handleIPCRequest(() => configService.get());
   });
 
   secureIpcHandle(IPC_CHANNELS.CONFIG.UPDATE, (_, newConfig) => {
-    return handleIPCRequest(() => configManager.update(newConfig));
+    return handleIPCRequest(() => configService.update(newConfig));
   });
 
   // Settings & Permissions Handlers
@@ -294,9 +298,24 @@ function registerIpcHandlers() {
     return handleIPCRequest(() => {
       const result = db.prepare('SELECT 1 as active').get() as { active: number };
       const migrationCount = db.prepare('SELECT COUNT(*) as count FROM migrations').get() as { count: number };
+      const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
+      const integrityStatus = integrity?.[0]?.integrity_check || 'ok';
+      let size_bytes = 0;
+      try {
+        const dbPath = databaseProvider.getDbPath();
+        if (fs.existsSync(dbPath)) {
+          size_bytes = fs.statSync(dbPath).size;
+        }
+      } catch {}
+
+      const isOk = result?.active === 1 && integrityStatus === 'ok';
+
       return {
-        status: result?.active === 1 ? 'OK' : 'ERROR',
+        status: isOk ? 'healthy' : 'corrupted',
+        active: result?.active === 1,
         appliedMigrations: migrationCount?.count || 0,
+        integrity: integrityStatus,
+        size_bytes,
       };
     });
   });
@@ -310,8 +329,8 @@ function registerIpcHandlers() {
       chromeVersion: process.versions.chrome,
       platform: process.platform,
       arch: process.arch,
-      env: config.env,
-      dbPath: config.dbPath,
+      env: configService.get().env,
+      dbPath: configService.get().dbPath,
     }));
   });
 
@@ -344,6 +363,10 @@ function registerIpcHandlers() {
 
   secureIpcHandle(IPC_CHANNELS.BILLING.GET_VARIANTS, () => {
     return handleIPCRequest(() => pricingService.getActiveVariants());
+  });
+
+  secureIpcHandle(IPC_CHANNELS.BILLING.GET_ACTIVE_DRAFT, () => {
+    return handleIPCRequest(() => invoiceService.getActiveDraft());
   });
 
   secureIpcHandle(IPC_CHANNELS.BILLING.UPDATE_RATE, (_, args) => {
@@ -379,7 +402,7 @@ function registerIpcHandlers() {
   });
 
   secureIpcHandle(IPC_CHANNELS.BILLING.REOPEN_INVOICE, (_, args) => {
-    return handleIPCRequest(() => invoiceService.reopenCompletedInvoice(args.invoice_id, args.password));
+    return handleIPCRequest(() => invoiceService.reopenCompletedInvoice(args.invoice_id, args.password, args.reason));
   });
 
   secureIpcHandle(IPC_CHANNELS.BILLING.DELETE_INVOICE, (_, args) => {
@@ -388,6 +411,10 @@ function registerIpcHandlers() {
 
   secureIpcHandle(IPC_CHANNELS.BILLING.VERIFY_BILL_ACTION_PASSWORD, (_, args: { password: string }) => {
     return handleIPCRequest(() => invoiceService.verifyActionPassword(args.password));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.BILLING.GET_LAST_COMPLETED, () => {
+    return handleIPCRequest(() => invoiceService.getLastCompletedInvoice());
   });
 
   secureIpcHandle(IPC_CHANNELS.BILLING.COMPLETE_INVOICE, (_, args) => {
@@ -428,13 +455,16 @@ function registerIpcHandlers() {
 
   async function printThermalHTMLWindow(htmlContent: string): Promise<{ success: boolean; failureReason?: string }> {
     return new Promise((resolve) => {
-      const currentConfig = (configManager.get() as any);
+      const currentConfig = (configService.get() as any);
       const paperWidth = currentConfig.receiptTemplate?.paperWidth || '80mm';
       const is58 = paperWidth === '58mm';
-      const widthMicrons = is58 ? 58000 : 80000;
-      const targetWidthPx = is58 ? 219 : 302;
+      // 80mm roll has 72mm active thermal element width (272px at 96dpi, 72000 microns).
+      // Matching 72mm prevents the RP 3220 Star driver from adding an artificial 8mm centering gap on the left!
+      const widthMicrons = is58 ? 58000 : 72000;
+      const targetWidthPx = is58 ? 220 : 272;
 
       let printWindow = new BrowserWindow({
+        title: 'POS Receipt',
         width: targetWidthPx,
         height: 1000,
         show: false,
@@ -444,7 +474,30 @@ function registerIpcHandlers() {
         }
       });
 
-      printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+      // Write HTML to temporary file to prevent Windows Spooler "Printing, Error"
+      // data URI string titles crash the RP 3220 Star driver!
+      const tempPath = path.join(app.getPath('temp'), `receipt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.html`);
+      try {
+        fs.writeFileSync(tempPath, htmlContent, 'utf-8');
+      } catch (writeErr) {
+        logger.error('Failed writing thermal receipt temp file', { error: writeErr });
+      }
+
+      const cleanupTempFile = () => {
+        try {
+          if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath);
+          }
+        } catch (unlinkErr) {
+          // ignore cleanup error
+        }
+      };
+
+      if (fs.existsSync(tempPath)) {
+        printWindow.loadFile(tempPath);
+      } else {
+        printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+      }
 
       printWindow.webContents.on('did-finish-load', async () => {
         try {
@@ -463,7 +516,7 @@ function registerIpcHandlers() {
               }
 
               if (printerName) {
-                configManager.update({
+                configService.update({
                   hardware: {
                     ...(currentConfig.hardware || {}),
                     printerName
@@ -489,8 +542,8 @@ function registerIpcHandlers() {
           `);
 
           // Convert CSS pixels to microns (96 dpi: 1px ≈ 264.5833 microns)
-          // Add 3mm (3,000 microns) margin for paper tear/cutter
-          const heightMicrons = Math.max(20000, Math.ceil(heightPx * 264.5833) + 3000);
+          // Add 20mm (20,000 microns) margin for full paper feed so cutter never cuts through totals
+          const heightMicrons = Math.max(25000, Math.ceil(heightPx * 264.5833) + 20000);
 
           const printOptions: any = {
             silent: true, // Always true to NEVER show print dialog box!
@@ -511,29 +564,210 @@ function registerIpcHandlers() {
           printWindow.webContents.print(printOptions, (success, failureReason) => {
             logger.info('Thermal print job processed', { success, failureReason, paperWidth, printerName, heightMicrons, heightPx });
             printWindow.destroy();
+            cleanupTempFile();
             resolve({ success, failureReason });
           });
         } catch (err: any) {
           logger.error('Failed executing thermal print', { error: err });
           printWindow.destroy();
+          cleanupTempFile();
           resolve({ success: false, failureReason: err.message });
         }
       });
     });
   }
 
-  secureIpcHandle(IPC_CHANNELS.BILLING.PRINT_RECEIPT, async (_, args: { invoice_id: number; previewOnly?: boolean }) => {
+  secureIpcHandle(IPC_CHANNELS.SYSTEM.GET_PRINTER_STATUS, async () => {
     return handleIPCRequest(async () => {
-      const receiptText = receiptService.generateReceiptText(args.invoice_id);
+      try {
+        const target = mainWindow || splashWindow;
+        if (!target || target.isDestroyed()) {
+          return { connected: false, printerName: null, allPrinters: [] };
+        }
+        const printers = await target.webContents.getPrintersAsync();
+        const currentConfig = (configService.get() as any);
+        const configuredName = currentConfig.hardware?.printerName?.toLowerCase();
+        
+        let matchedPrinter = printers.find(p => configuredName && p.name.toLowerCase() === configuredName);
+        if (!matchedPrinter) {
+          matchedPrinter = printers.find(p => p.name.toLowerCase().includes('rp 3220') || p.name.toLowerCase().includes('star'));
+        }
+        if (!matchedPrinter) {
+          matchedPrinter = printers.find(p => p.isDefault);
+        }
+
+        // On Windows, thermal printers (e.g. RP 3220 Star) often have bi-directional status disabled.
+        // Status 0x80 (128) is PRINTER_STATUS_OFFLINE, 0x00000400 is PRINTER_STATUS_NOT_AVAILABLE.
+        // If the printer is installed and not marked offline, it is connected and ready.
+        const isOffline = matchedPrinter ? Boolean(matchedPrinter.status & 0x80) : true;
+        const isConnected = !!matchedPrinter && !isOffline;
+
+        return {
+          connected: isConnected,
+          printerName: matchedPrinter?.name || null,
+          displayName: matchedPrinter?.displayName || matchedPrinter?.name || null,
+          isDefault: matchedPrinter?.isDefault ?? false,
+          status: matchedPrinter?.status ?? -1,
+          allPrinters: printers.map(p => ({ name: p.name, isDefault: p.isDefault, status: p.status }))
+        };
+      } catch (err: any) {
+        logger.warn('Failed querying system printer status', { error: err });
+        return { connected: false, printerName: null, error: err.message, allPrinters: [] };
+      }
+    });
+  });
+
+  secureIpcHandle(IPC_CHANNELS.BILLING.PRINT_RECEIPT, async (_, args: { invoice_id: number; previewOnly?: boolean; printType?: 'both' | 'normal' | 'token'; isInitialPrint?: boolean; reason?: string }) => {
+    return handleIPCRequest(async () => {
+      const printType = args.printType || 'normal';
 
       if (args.previewOnly) {
+        const receiptText = printType === 'token'
+          ? receiptService.generateTokenReceiptText(args.invoice_id)
+          : receiptService.generateReceiptText(args.invoice_id);
         return { success: true, receiptText };
       }
 
-      const htmlContent = receiptService.generateReceiptHTML(args.invoice_id);
-      const printResult = await printThermalHTMLWindow(htmlContent);
+      receiptService.recordPrint(args.invoice_id, authService.getCurrentUserId() || 1, args.reason, args.isInitialPrint);
 
-      return { success: printResult.success, receiptText, failureReason: printResult.failureReason };
+      if (printType === 'both') {
+        // 1. Normal bill prints first
+        const normalHtml = receiptService.generateReceiptHTML(args.invoice_id);
+        const normalResult = await printThermalHTMLWindow(normalHtml);
+
+        // 2. Delay for paper cutter cycle before token bill
+        await new Promise(r => setTimeout(r, 600));
+
+        // 3. Token bill prints second as a separate bill
+        const tokenHtml = receiptService.generateTokenReceiptHTML(args.invoice_id);
+        const tokenResult = await printThermalHTMLWindow(tokenHtml);
+
+        return {
+          success: normalResult.success && tokenResult.success,
+          receiptText: receiptService.generateReceiptText(args.invoice_id),
+          failureReason: normalResult.failureReason || tokenResult.failureReason,
+        };
+      } else if (printType === 'token') {
+        const tokenHtml = receiptService.generateTokenReceiptHTML(args.invoice_id);
+        const printResult = await printThermalHTMLWindow(tokenHtml);
+        return {
+          success: printResult.success,
+          receiptText: receiptService.generateTokenReceiptText(args.invoice_id),
+          failureReason: printResult.failureReason,
+        };
+      } else {
+        const normalHtml = receiptService.generateReceiptHTML(args.invoice_id);
+        const printResult = await printThermalHTMLWindow(normalHtml);
+        return {
+          success: printResult.success,
+          receiptText: receiptService.generateReceiptText(args.invoice_id),
+          failureReason: printResult.failureReason,
+        };
+      }
+    });
+  });
+
+  secureIpcHandle(IPC_CHANNELS.BILLING.PRINT_TEST_RECEIPT, async (_, args?: { templateOverride?: any; isCalibrationSeries?: boolean; widths?: number[] }) => {
+    return handleIPCRequest(async () => {
+      const testHtml = args?.isCalibrationSeries
+        ? receiptService.generateWidthCalibrationHTML(args?.widths)
+        : receiptService.generateTestReceiptHTML(args?.templateOverride);
+      const printResult = await printThermalHTMLWindow(testHtml);
+      return {
+        success: printResult.success,
+        failureReason: printResult.failureReason,
+      };
+    });
+  });
+
+  secureIpcHandle(IPC_CHANNELS.BILLING.PRINT_WIDTH_CALIBRATION, async (_, args?: { widths?: number[] }) => {
+    return handleIPCRequest(async () => {
+      const calibrationHtml = receiptService.generateWidthCalibrationHTML(args?.widths);
+      const printResult = await printThermalHTMLWindow(calibrationHtml);
+      return {
+        success: printResult.success,
+        failureReason: printResult.failureReason,
+      };
+    });
+  });
+
+  secureIpcHandle(IPC_CHANNELS.BILLING.SEND_WHATSAPP_BILL, async (_, args: { invoice_id: number; customPhone?: string }) => {
+    return handleIPCRequest(async () => {
+      const res = await whatsAppService.sendInvoiceWhatsApp(args.invoice_id, args.customPhone);
+      const allWindows = BrowserWindow.getAllWindows();
+      for (const win of allWindows) {
+        if (!win.isDestroyed()) {
+          if (res.success) {
+            win.webContents.send(IPC_CHANNELS.WHATSAPP.EVENT_SEND_SUCCESS, {
+              queueId: args.invoice_id,
+              invoiceId: args.invoice_id,
+              phone: res.phone || '',
+              messageType: 'receipt',
+            });
+          } else {
+            win.webContents.send(IPC_CHANNELS.WHATSAPP.EVENT_SEND_FAILED, {
+              queueId: args.invoice_id,
+              invoiceId: args.invoice_id,
+              phone: res.phone || '',
+              reason: res.failureReason || 'Dispatch failed',
+            });
+          }
+        }
+      }
+      return res;
+    });
+  });
+
+  // ─── WhatsApp Baileys Handlers ───
+  secureIpcHandle(IPC_CHANNELS.WHATSAPP.GET_STATUS, () => {
+    return baileysWhatsAppService.getStatus();
+  });
+
+  secureIpcHandle(IPC_CHANNELS.WHATSAPP.LOGOUT, async () => {
+    return await baileysWhatsAppService.logout();
+  });
+
+  secureIpcHandle(IPC_CHANNELS.WHATSAPP.FORCE_RECONNECT, async () => {
+    return await baileysWhatsAppService.forceReconnect();
+  });
+
+  secureIpcHandle(IPC_CHANNELS.WHATSAPP.REQUEST_PAIRING_CODE, async (_, args: { phone: string }) => {
+    return await baileysWhatsAppService.requestPairingCode(args.phone);
+  });
+
+  secureIpcHandle(IPC_CHANNELS.WHATSAPP.SEND_MESSAGE, async (_, args: { phone: string; message: string }) => {
+    const res = await baileysWhatsAppService.sendMessage(args.phone, args.message);
+    return {
+      success: res.success,
+      phone: args.phone,
+      messageId: res.messageId,
+      failureReason: res.error,
+    };
+  });
+
+  secureIpcHandle(IPC_CHANNELS.WHATSAPP.CLEAR_SESSION, () => {
+    return handleIPCRequest(() => baileysWhatsAppService.logout());
+  });
+
+  secureIpcHandle(IPC_CHANNELS.WHATSAPP.GET_CONFIG, () => {
+    return handleIPCRequest(() => {
+      const cfg = configService.get();
+      return cfg.whatsAppConfig || {};
+    });
+  });
+
+  secureIpcHandle(IPC_CHANNELS.WHATSAPP.UPDATE_CONFIG, (_, newConfig: any) => {
+    return handleIPCRequest(() => {
+      const current = configService.get();
+      const updated = {
+        ...current,
+        whatsAppConfig: {
+          ...(current.whatsAppConfig || {}),
+          ...newConfig,
+        },
+      };
+      configService.update(updated);
+      return updated.whatsAppConfig;
     });
   });
 
@@ -769,6 +1003,52 @@ function registerIpcHandlers() {
     return handleIPCRequest(() => inventoryService.getFridgeActivityLog(args));
   });
 
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.MOVE_TO_REFRIGERATOR, (_, args: any) => {
+    const { refrigeratorService } = require('../modules/inventory/backend/service/refrigerator_service');
+    return handleIPCRequest(() => refrigeratorService.moveToRefrigerator(args, authService.getCurrentUserId() || 1));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.REMOVE_FROM_REFRIGERATOR, (_, args: any) => {
+    const { refrigeratorService } = require('../modules/inventory/backend/service/refrigerator_service');
+    return handleIPCRequest(() => refrigeratorService.executeRemoval(args, authService.getCurrentUserId() || 1));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.GET_LIVE_CHICKEN_BATCHES, (_, args?: { status?: 'active' | 'exhausted' }) => {
+    const { liveChickenService } = require('../modules/inventory/backend/service/live_chicken_service');
+    return handleIPCRequest(() => liveChickenService.listBatches(args?.status));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.CREATE_LIVE_CHICKEN_BATCH, (_, args: any) => {
+    const { liveChickenService } = require('../modules/inventory/backend/service/live_chicken_service');
+    return handleIPCRequest(() => liveChickenService.createBatch(args));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.EDIT_LIVE_CHICKEN_BATCH, (_, args: any) => {
+    const { liveChickenService } = require('../modules/inventory/backend/service/live_chicken_service');
+    return handleIPCRequest(() => liveChickenService.editBatch({
+      ...args,
+      user_id: authService.getCurrentUserId() || 1,
+    }));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.LOG_LIVESTOCK_MORTALITY, (_, args: any) => {
+    const { liveChickenService } = require('../modules/inventory/backend/service/live_chicken_service');
+    return handleIPCRequest(() => liveChickenService.logMortality({
+      ...args,
+      user_id: authService.getCurrentUserId() || 1,
+    }));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.PROCESS_LIVE_CHICKEN_BATCH, (_, args: any) => {
+    const { yieldProcessingService } = require('../modules/inventory/backend/service/yield_processing_service');
+    return handleIPCRequest(() => yieldProcessingService.processLiveChickenBatch(args, authService.getCurrentUserId() || 1));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.LIST_PROCESSING_EVENTS, (_, args?: { limit?: number }) => {
+    const { yieldProcessingService } = require('../modules/inventory/backend/service/yield_processing_service');
+    return handleIPCRequest(() => yieldProcessingService.listProcessingEvents(args?.limit));
+  });
+
   // ─── Physical Audit & Consistency Checker Handlers ───
   secureIpcHandle(IPC_CHANNELS.INVENTORY.AUDIT_CREATE_SESSION, (_, args: any) => {
     const { physicalAuditService } = require('../modules/inventory/backend/service/physical_audit_service');
@@ -813,6 +1093,10 @@ function registerIpcHandlers() {
   secureIpcHandle(IPC_CHANNELS.INVENTORY.CHECK_INVENTORY_CONSISTENCY, () => {
     const { inventoryConsistencyChecker } = require('../modules/inventory/backend/service/inventory_consistency_checker');
     return handleIPCRequest(() => inventoryConsistencyChecker.runConsistencyCheck());
+  });
+
+  secureIpcHandle(IPC_CHANNELS.INVENTORY.EMPTY_INVENTORY, (_, args: any) => {
+    return handleIPCRequest(() => inventoryService.emptyInventory(args));
   });
 
   // ─── Authentication Handlers ───
@@ -936,6 +1220,18 @@ function registerIpcHandlers() {
     return handleIPCRequest(() => productManagementService.deleteProduct(args.id));
   });
 
+  secureIpcHandle(IPC_CHANNELS.PRODUCTS.DEACTIVATE_CATEGORY, (_, args) => {
+    return handleIPCRequest(() => productManagementService.deactivateCategory(args.category));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.PRODUCTS.REACTIVATE_CATEGORY, (_, args) => {
+    return handleIPCRequest(() => productManagementService.reactivateCategory(args.category));
+  });
+
+  secureIpcHandle(IPC_CHANNELS.PRODUCTS.DELETE_CATEGORY, (_, args) => {
+    return handleIPCRequest(() => productManagementService.deleteCategory(args.category));
+  });
+
   secureIpcHandle(IPC_CHANNELS.PRODUCTS.CREATE_VARIANT, (_, args) => {
     return handleIPCRequest(() => productManagementService.createVariant(args, args.set_by || 1));
   });
@@ -976,6 +1272,14 @@ function registerIpcHandlers() {
     return handleIPCRequest(() => productManagementService.getRateHistory(args.variant_id));
   });
 
+  secureIpcHandle(IPC_CHANNELS.PRODUCTS.GET_DELETED_ARCHIVE, () => {
+    return handleIPCRequest(() => productManagementService.getDeletedArchive());
+  });
+
+  secureIpcHandle(IPC_CHANNELS.PRODUCTS.RESTORE_DELETED, (_, args) => {
+    return handleIPCRequest(() => productManagementService.restoreDeletedProduct(args.archiveId));
+  });
+
   // ─── System Backup & Export Handlers ───
   secureIpcHandle(IPC_CHANNELS.SYSTEM.BACKUP_DATABASE, async () => {
     return handleIPCRequest(async () => {
@@ -1002,6 +1306,24 @@ function registerIpcHandlers() {
       }
       backupService.exportToCSV(args.type, result.filePath);
       return { success: true, filePath: result.filePath };
+    });
+  });
+
+  secureIpcHandle(IPC_CHANNELS.SYSTEM.RESTORE_DATABASE, async (_, args?: { filePath?: string }) => {
+    return handleIPCRequest(async () => {
+      let restorePath = args?.filePath;
+      if (!restorePath) {
+        const result = await dialog.showOpenDialog(mainWindow!, {
+          title: 'Select Backup Database File to Restore',
+          filters: [{ name: 'SQLite Database', extensions: ['db', 'sqlite', 'bak'] }],
+          properties: ['openFile']
+        });
+        if (result.canceled || !result.filePaths?.[0]) {
+          return { success: false, reason: 'cancelled' };
+        }
+        restorePath = result.filePaths[0];
+      }
+      return await backupService.restoreDatabase(restorePath);
     });
   });
 
@@ -1511,8 +1833,10 @@ function registerIpcHandlers() {
   secureIpcHandle(IPC_CHANNELS.PAYMENTS_RECEIPTS.GET_BILL_PAYMENT_HISTORY, (_, args) => handleIPCRequest(() => paymentEngineService.getBillPaymentHistory(args.billType, args.billId)));
   secureIpcHandle(IPC_CHANNELS.PAYMENTS_RECEIPTS.GET_OUTSTANDING_BILLS, (_, args) => handleIPCRequest(() => paymentEngineService.getOutstandingPurchaseBills(args || {})));
 
-  // ─── Delivery Module ──────────────────────────────────────────────────────────
-  secureIpcHandle(IPC_CHANNELS.DELIVERY.CREATE, (_, args) => handleIPCRequest(() => container.deliveryService.createDeliveryOrder(args, authService.getCurrentUserId() || 1)));
+  secureIpcHandle(IPC_CHANNELS.DELIVERY.CREATE, (_, args) => {
+    console.log('[MAIN-IPC-DELIVERY-CREATE]', 'Handler entered. Args received:', JSON.stringify(args));
+    return handleIPCRequest(() => container.deliveryService.createDeliveryOrder(args, authService.getCurrentUserId() || 1));
+  });
   secureIpcHandle(IPC_CHANNELS.DELIVERY.GET_BY_ID, (_, args) => handleIPCRequest(() => container.deliveryService.getDeliveryById(args.id)));
   secureIpcHandle(IPC_CHANNELS.DELIVERY.LIST, (_, args) => handleIPCRequest(() => container.deliveryService.listDeliveries(args || {})));
   secureIpcHandle(IPC_CHANNELS.DELIVERY.UPDATE_STATUS, (_, args) => {
@@ -1538,6 +1862,8 @@ function registerIpcHandlers() {
   secureIpcHandle(IPC_CHANNELS.DELIVERY.UPDATE_ADDRESS, (_, args) => handleIPCRequest(() => container.addressService.updateAddress(args.id, args.updates)));
   secureIpcHandle(IPC_CHANNELS.DELIVERY.DELETE_ADDRESS, (_, args) => handleIPCRequest(() => container.addressService.deleteAddress(args.id)));
   secureIpcHandle(IPC_CHANNELS.DELIVERY.SET_DEFAULT_ADDRESS, (_, args) => handleIPCRequest(() => container.addressService.setDefaultAddress(args.id)));
+  secureIpcHandle(IPC_CHANNELS.DELIVERY.MARK_PAYMENT_RECEIVED, (_, args) => handleIPCRequest(() => container.deliveryService.markPaymentReceived(args.deliveryId, args.isPaid ?? true, authService.getCurrentUserId() || 1)));
+  secureIpcHandle(IPC_CHANNELS.DELIVERY.MARK_DELIVERED, (_, args) => handleIPCRequest(() => container.deliveryService.markDelivered(args.deliveryId, args.isDelivered ?? true, authService.getCurrentUserId() || 1)));
 }
 
 
@@ -1546,8 +1872,8 @@ app.on('ready', async () => {
   logger.info('================================================================');
   logger.info(`[STARTUP] Starting POS application...`);
   logger.info(`[STARTUP] Project Root (cwd) : ${process.cwd()}`);
-  logger.info(`[STARTUP] Environment         : ${config.env} (isDev: ${isDev})`);
-  logger.info(`[STARTUP] Database Path       : ${config.dbPath}`);
+  logger.info(`[STARTUP] Environment         : ${configService.get().env} (isDev: ${isDev})`);
+  logger.info(`[STARTUP] Database Path       : ${configService.get().dbPath}`);
   logger.info(`[STARTUP] UserData Path       : ${app.getPath('userData')}`);
   logger.info('================================================================');
   
@@ -1557,6 +1883,38 @@ app.on('ready', async () => {
     createSplashWindow().catch(err => logger.error('Failed to create splash window', err));
   }
 
+  // Configure WhatsApp partition session with the exact native Chromium version User-Agent
+  // to guarantee 100% match with Client Hints (sec-ch-ua) and eliminate WhatsApp Web logout loops
+  const CHROME_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
+  try {
+    const whatsappSession = session.fromPartition('persist:whatsapp');
+    whatsappSession.setUserAgent(CHROME_USER_AGENT);
+
+    // Grant all permissions needed by WhatsApp Web (notifications, persistent storage, audio/media, clipboard)
+    whatsappSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+      callback(true);
+    });
+    whatsappSession.setPermissionCheckHandler(() => true);
+
+    // Ensure all requests, service workers, and WebSockets send identical matching User-Agent and Client Hints
+    const chromeMajor = (process.versions.chrome || '126').split('.')[0];
+    whatsappSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      details.requestHeaders['User-Agent'] = CHROME_USER_AGENT;
+      details.requestHeaders['sec-ch-ua'] = `"Not/A)Brand";v="8", "Chromium";v="${chromeMajor}", "Google Chrome";v="${chromeMajor}"`;
+      details.requestHeaders['sec-ch-ua-mobile'] = '?0';
+      details.requestHeaders['sec-ch-ua-platform'] = '"Windows"';
+      callback({ cancel: false, requestHeaders: details.requestHeaders });
+    });
+  } catch (err) {
+    logger.warn('Failed to set WhatsApp partition user-agent', { error: err });
+  }
+
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.getType() === 'webview') {
+      contents.setUserAgent(CHROME_USER_AGENT);
+    }
+  });
+
   // Setup IPC handlers
   registerIpcHandlers();
 
@@ -1565,6 +1923,11 @@ app.on('ready', async () => {
     logger.info('Running database migrations...');
     migrationEngine.run();
     logger.info('Database migrations completed successfully.');
+
+    // Initialize embedded Baileys WhatsApp service in background
+    baileysWhatsAppService.init().catch((err) => {
+      logger.error('Failed to initialize Baileys WhatsApp service', err);
+    });
 
     // Upgrade seeded users passwords to scrypt if not already upgraded
     authService.upgradeSeededUsers();
@@ -1584,8 +1947,6 @@ app.on('ready', async () => {
   }
 
   // 4. Launch Main Window
-  // Do not add an arbitrary startup delay. The window should be created as soon as
-  // the database is ready; Vite/Electron already synchronize through the dev URL.
   void createMainWindow();
 });
 

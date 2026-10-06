@@ -1,6 +1,6 @@
 {
   "env": "development",
-  "dbPath": "E:\\pos\\claude version1\\aug17Aistuiv2\\dev.db",
+  "dbPath": "dev.db",
   "shopInfo": {
     "name": "My Premium Meat Shop",
     "address": "123 Market Square, Bangalore",
@@ -107,7 +107,13 @@
     "showHsn": true,
     "showDiscount": true,
     "showCashier": true,
-    "showCustomer": true
+    "showCustomer": true,
+    "leftMarginMm": 0,
+    "safePrintWidthMm": 60,
+    "topMarginMm": 0,
+    "fontFamily": "Consolas",
+    "fontSize": "medium",
+    "headerAlignment": "center"
   },
   "billingSettings": {
     "skipPaymentConfirmation": false,
@@ -131,5 +137,11 @@
     "enableMeatMode": true,
     "enableManufacturing": false,
     "enablePharmacy": false
+  },
+  "whatsAppConfig": {
+    "maxRetries": 3,
+    "retryBackoffSeconds": 30,
+    "billCaptionTemplate": "🧾 *{shopName}*\nDear *{customerName}*, greetings from {shopName}! 🙏\n\n📄 *Bill No:* {billNo}\n💰 *Bill Total:* ₹{netAmount}\n📅 *Date:* {date}\n\nAttached is your digital bill receipt. Thank you for choosing us! ✨",
+    "deliveryMessageTemplate": "🛵 *Order Confirmed - Will deliver shortly!*\nDear *{customerName}*, your order (#{billNo}) is freshly prepared and out for delivery shortly. Thank you! 🙏"
   }
 }

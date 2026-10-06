@@ -1,4 +1,4 @@
--- Immutable, shift-scoped cash control ledger. Amounts are always positive; direction is authoritative.
+-- Immutable, shift-scoped cash control ledger. Amounts are always positive, direction is authoritative.
 ALTER TABLE pos_sessions ADD COLUMN opening_denominations_json TEXT;
 ALTER TABLE pos_sessions ADD COLUMN closing_denominations_json TEXT;
 ALTER TABLE pos_sessions ADD COLUMN variance_reason TEXT;

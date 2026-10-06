@@ -6,7 +6,6 @@ import { invoiceService } from '../../modules/billing/backend/service/invoice_se
 import { receiptService } from '../../modules/billing/backend/service/receipt_service';
 import { configService } from '../config/config_service';
 import { authService } from '../../modules/auth/backend/service/auth_service';
-import { inventoryLedgerService } from '../../modules/inventory/backend/service/inventory_ledger_service';
 import { DeliveryService } from '../../modules/delivery/backend/service/delivery_service';
 
 const deliveryService = new DeliveryService();
@@ -102,17 +101,17 @@ async function runTests() {
     invoiceId: custBill.id,
   });
 
-  // Verify Receipt Text & HTML for Previous Outstanding Breakdown
+  // Verify Receipt Text & HTML for Customer Balances (Opening, Bill, Paid, Closing)
   const receiptText = receiptService.generateReceiptText(completedCustBill.invoice.id, 40);
   const receiptHTML = receiptService.generateReceiptHTML(completedCustBill.invoice.id);
 
-  if (!receiptText.includes('Previous Outstanding:') || !receiptText.includes('Grand Total Due :')) {
-    throw new Error('Receipt text missing previous outstanding breakdown');
+  if (!receiptText.includes('Opening Balance :') || !receiptText.includes('Closing Balance :')) {
+    throw new Error('Receipt text missing Opening/Closing balance breakdown');
   }
-  if (!receiptHTML.includes('Previous Outstanding:') || !receiptHTML.includes('Grand Total Due :')) {
-    throw new Error('Receipt HTML missing previous outstanding breakdown');
+  if (!receiptHTML.includes('Opening Balance :') || !receiptHTML.includes('Closing Balance :')) {
+    throw new Error('Receipt HTML missing Opening/Closing balance breakdown');
   }
-  console.log('  PASS: Receipt text & HTML correctly show Previous Outstanding & Grand Total Due breakdown.');
+  console.log('  PASS: Receipt text & HTML correctly show Customer Balances (Opening Balance, Bill Amount, Paid Amount, Closing Balance).');
 
   // ----------------------------------------------------
   // TEST 3: Edit Bill & Bill Search (Section 3 & 5)

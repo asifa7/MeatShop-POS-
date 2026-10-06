@@ -29,7 +29,144 @@ export const CRITICAL_SCHEMA_MANIFEST: SchemaManifestItem[] = [
   { table: 'employees', columns: ['id', 'emp_code', 'full_name', 'salary_type', 'is_active'] },
   { table: 'employee_attendance', columns: ['id', 'employee_id', 'date', 'status'] },
   { table: 'expenses', columns: ['id', 'amount_paise', 'payment_method', 'status'] },
+  { table: 'live_chicken_batches', columns: ['id', 'batch_number', 'remaining_weight_grams', 'remaining_count', 'status'] },
+  { table: 'processing_events', columns: ['id', 'event_number', 'batch_id', 'live_weight_grams', 'processed_weight_grams', 'yield_ratio_used'] },
+  { table: 'refrigerator_stock', columns: ['id', 'item_name', 'item_type', 'quantity_grams', 'count', 'status'] },
 ];
+
+/**
+ * Splits an SQL script into executable statements, safely handling:
+ * - Line comments (-- ...) without splitting on semicolons inside comments
+ * - Block comments (/* ... *\/)
+ * - Single and double quoted strings ('...' and "...")
+ * - Triggers with BEGIN ... END blocks
+ */
+export function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let inTrigger = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i];
+    const nextChar = sql[i + 1];
+
+    if (inLineComment) {
+      if (char === '\n' || char === '\r') {
+        inLineComment = false;
+        current += '\n';
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      if (char === '*' && nextChar === '/') {
+        inBlockComment = false;
+        i++; // skip /
+        current += ' ';
+      }
+      continue;
+    }
+
+    if (inSingleQuote) {
+      current += char;
+      if (char === "'") {
+        if (nextChar === "'") {
+          current += nextChar;
+          i++; // skip escaped quote
+        } else {
+          inSingleQuote = false;
+        }
+      }
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      current += char;
+      if (char === '"') {
+        if (nextChar === '"') {
+          current += nextChar;
+          i++; // skip escaped quote
+        } else {
+          inDoubleQuote = false;
+        }
+      }
+      continue;
+    }
+
+    // Check for comment starts
+    if (char === '-' && nextChar === '-') {
+      inLineComment = true;
+      i++; // skip next -
+      continue;
+    }
+
+    if (char === '/' && nextChar === '*') {
+      inBlockComment = true;
+      i++; // skip next *
+      continue;
+    }
+
+    // Check for quote starts
+    if (char === "'") {
+      inSingleQuote = true;
+      current += char;
+      continue;
+    }
+
+    if (char === '"') {
+      inDoubleQuote = true;
+      current += char;
+      continue;
+    }
+
+    // Check if statement is CREATE [TEMP/TEMPORARY] TRIGGER
+    if (!inTrigger) {
+      if (/\bCREATE\s+(?:TEMPORARY\s+|TEMP\s+)?TRIGGER\b/i.test(current)) {
+        inTrigger = true;
+      }
+    }
+
+    // If inside trigger, semicolon only ends the statement if preceded by END
+    if (inTrigger) {
+      if (char === ';') {
+        const trimmed = current.trim();
+        if (/\bEND$/i.test(trimmed)) {
+          inTrigger = false;
+          const stmt = (current + ';').trim();
+          if (stmt.length > 0) {
+            statements.push(stmt);
+          }
+          current = '';
+          continue;
+        }
+      }
+      current += char;
+      continue;
+    }
+
+    if (char === ';') {
+      const stmt = current.trim();
+      if (stmt.length > 0) {
+        statements.push(stmt);
+      }
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  const remaining = current.trim();
+  if (remaining.length > 0) {
+    statements.push(remaining);
+  }
+
+  return statements;
+}
 
 export class MigrationEngine {
   private migrationsPath: string;
@@ -79,10 +216,7 @@ export class MigrationEngine {
    * Safely execute an SQL script statement-by-statement, tolerating idempotent errors like "duplicate column name".
    */
   private executeIdempotentSql(sql: string): void {
-    const statements = sql
-      .split(';')
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
+    const statements = splitSqlStatements(sql);
 
     for (const stmt of statements) {
       try {

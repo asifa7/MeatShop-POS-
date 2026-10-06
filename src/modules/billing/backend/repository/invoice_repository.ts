@@ -31,6 +31,9 @@ export interface InvoiceRow {
   round_off_paise?: number;
   narration?: string | null;
   print_delivery_token?: number;
+  whatsapp_delivery_status?: 'pending' | 'sent' | 'not_delivered' | null;
+  reprint_count?: number;
+  initial_printed_at?: string | null;
   shop_name_snapshot: string | null;
   shop_address_snapshot: string | null;
 }
@@ -60,6 +63,8 @@ export interface CompleteInvoiceUpdate {
   round_off_paise?: number;
   narration?: string | null;
   print_delivery_token?: number;
+  is_delivery?: number;
+  delivery_charge_paise?: number;
   shop_name_snapshot: string;
   shop_address_snapshot: string;
 }
@@ -75,6 +80,10 @@ const invoiceRepository = {
 
   findByInvoiceNumber(invoiceNumber: string): InvoiceRow | undefined {
     return db.prepare('SELECT * FROM invoices WHERE invoice_number = ?').get(invoiceNumber) as InvoiceRow | undefined;
+  },
+
+  findLatestCompleted(): InvoiceRow | undefined {
+    return db.prepare("SELECT * FROM invoices WHERE status IN ('completed', 'void') ORDER BY COALESCE(completed_at, created_at) DESC, id DESC LIMIT 1").get() as InvoiceRow | undefined;
   },
 
   getTodayBills(): InvoiceRow[] {
@@ -130,6 +139,8 @@ const invoiceRepository = {
         round_off_paise = COALESCE(@round_off_paise, 0),
         narration = @narration,
         print_delivery_token = COALESCE(@print_delivery_token, 0),
+        is_delivery = COALESCE(@is_delivery, is_delivery),
+        delivery_charge_paise = COALESCE(@delivery_charge_paise, delivery_charge_paise),
         shop_name_snapshot = @shop_name_snapshot,
         shop_address_snapshot = @shop_address_snapshot,
         completed_at = CURRENT_TIMESTAMP
@@ -143,6 +154,8 @@ const invoiceRepository = {
       round_off_paise: update.round_off_paise ?? 0,
       narration: update.narration ?? null,
       print_delivery_token: update.print_delivery_token ? 1 : 0,
+      is_delivery: update.is_delivery !== undefined ? (update.is_delivery ? 1 : 0) : null,
+      delivery_charge_paise: update.delivery_charge_paise ?? null,
     });
   },
 
@@ -337,7 +350,16 @@ const invoiceRepository = {
       };
     });
   },
+
+  updateWhatsAppDeliveryStatus(invoiceId: number, status: 'pending' | 'sent' | 'not_delivered'): void {
+    db.prepare(`
+      UPDATE invoices
+      SET whatsapp_delivery_status = ?
+      WHERE id = ?
+    `).run(status, invoiceId);
+  },
 };
 
 export { invoiceRepository };
+
 

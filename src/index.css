@@ -183,3 +183,19 @@ html:not(.dark) .bg-amber-950\/20 {
   background-color: #fef3c7 !important; /* amber-100 */
 }
 
+/* Marquee text animation */
+@keyframes marquee-scroll {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  display: inline-block;
+  white-space: nowrap;
+  animation: marquee-scroll 18s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+

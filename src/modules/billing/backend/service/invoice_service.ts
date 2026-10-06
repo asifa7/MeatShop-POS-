@@ -74,6 +74,19 @@ export class InvoiceService {
     return this.invoiceRepo.findById(invoiceId);
   }
 
+  public getActiveDraft(): InvoiceDetail {
+    const draft = this.invoiceRepo.findLatestDraft();
+    if (draft) {
+      return draft;
+    }
+    const newInvoice = this.createDraft({});
+    return this.getInvoice(newInvoice.id);
+  }
+
+  public getLastCompletedInvoice(): InvoiceDetail | null {
+    return this.invoiceRepo.findLatestCompleted();
+  }
+
   public addItem(input: {
     invoice_id: number;
     product_variant_id: number;
@@ -82,6 +95,8 @@ export class InvoiceService {
     override_rate_paise?: number | null;
     override_reason?: string | null;
     overridden_by?: number | null;
+    stock_source?: 'processed_chicken' | 'mutton_regular' | 'refrigerator' | 'none';
+    refrigerator_stock_id?: number | null;
   }) {
     const { invoice } = this.invoiceRepo.findById(input.invoice_id);
     if (invoice.status !== 'draft' && invoice.status !== 'held') {
@@ -89,9 +104,25 @@ export class InvoiceService {
     }
 
     const variant = this.productRepo.findVariantById(input.product_variant_id);
+    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(variant.product_id) as any;
 
-    const hasOverride = input.override_rate_paise !== null && input.override_rate_paise !== undefined;
-    const ratePaiseSnapshot = hasOverride ? input.override_rate_paise! : variant.current_rate_paise_per_unit;
+    let stockSource = input.stock_source;
+    if (!stockSource) {
+      if (product?.category?.toLowerCase().includes('chicken') || product?.name?.toLowerCase().includes('chicken')) {
+        stockSource = 'processed_chicken';
+      } else if (product?.category?.toLowerCase().includes('mutton') || product?.name?.toLowerCase().includes('mutton')) {
+        stockSource = 'mutton_regular';
+      } else {
+        stockSource = 'none';
+      }
+    }
+
+    const hasOverride = input.override_rate_paise !== null && 
+      input.override_rate_paise !== undefined && 
+      input.override_rate_paise !== variant.current_rate_paise_per_unit;
+    const ratePaiseSnapshot = (input.override_rate_paise !== null && input.override_rate_paise !== undefined) 
+      ? input.override_rate_paise! 
+      : variant.current_rate_paise_per_unit;
 
     const unitType = variant.unit_type;
     const lineSubtotalPaise = pricingService.calculateLineSubtotal(
@@ -105,13 +136,13 @@ export class InvoiceService {
     const validationInput = {
       invoice_id: input.invoice_id,
       product_variant_id: input.product_variant_id,
-      quantity_grams: input.quantity_grams,
-      quantity_units: input.quantity_units,
+      quantity_grams: input.quantity_grams ?? null,
+      quantity_units: input.quantity_units ?? null,
       rate_paise_snapshot: ratePaiseSnapshot,
       gst_rate_percent_snapshot: gstRateSnapshot,
       override_applied: hasOverride,
-      override_reason: hasOverride ? (input.override_reason ?? null) : null,
-      overridden_by: hasOverride ? (input.overridden_by ?? null) : null,
+      override_reason: hasOverride ? (input.override_reason ?? 'Manual price override') : null,
+      overridden_by: hasOverride ? (input.overridden_by ?? this.getCurrentUserId() ?? 1) : null,
       unit_type: unitType,
     };
 
@@ -132,31 +163,15 @@ export class InvoiceService {
       override_applied: hasOverride ? 1 : 0,
       override_reason: hasOverride ? (input.override_reason ?? null) : null,
       overridden_by: hasOverride ? (input.overridden_by ?? null) : null,
+      stock_source: stockSource,
+      refrigerator_stock_id: input.refrigerator_stock_id ?? null,
     });
 
-    logger.info('Item added to invoice', { invoiceId: input.invoice_id, itemId: item.id });
+    logger.info('Item added to invoice', { invoiceId: input.invoice_id, itemId: item.id, stockSource });
     return this.getInvoice(input.invoice_id);
   }
 
   public updateItemQuantity(itemId: number, quantityGrams: number | null, quantityUnits: number | null) {
-    const items = this.invoiceRepo.findItemsByInvoiceId(0); // Dummy lookup or refactored direct fetch
-    // Find item in DB to check properties
-    // For simplicity, fetch the invoice item from invoice Repo
-    // Add simple get item helper or query
-    const itemsList = this.invoiceRepo.findItemsByInvoiceId(0); // Dummy fetch
-    // Actually we need to lookup invoice item by id. Since we didn't add findItemById, we query invoice repo findItemsByInvoiceId.
-    // Let's do a direct look up of the invoice detail or fetch
-    // Wait, let's fetch all items of active draft since that is standard for invoice detail.
-    // To make it extremely clean, we can fetch all items for the invoice.
-    // Let's find the item by id.
-    const item = this.invoiceRepo.findItemsByInvoiceId(0).find(i => i.id === itemId); // Fallback: find it in context
-    // Wait! Let's check how item was queried before: `invoiceItemsRepository.findById(itemId)`
-    // To make it completely DI safe, let's fetch item by querying the parent invoice. But we need invoice id.
-    // Let's query invoice_items table directly? No, "No SQL anywhere else".
-    // So let's add `findItemById(id: number): InvoiceItem` to `IInvoiceRepository` and implement it in repositories.ts!
-    // Yes! Let's do that. That is 100% clean and correct.
-    // Let's check: we can add `findItemById` to `IInvoiceRepository`.
-    // Let's first draft the code of updateItemQuantity:
     const dbItem = this.invoiceRepo.findItemById(itemId);
     const { invoice } = this.invoiceRepo.findById(dbItem.invoice_id);
     if (invoice.status !== 'draft' && invoice.status !== 'held') {
@@ -187,6 +202,7 @@ export class InvoiceService {
     if (invoice.status !== 'draft' && invoice.status !== 'held') {
       throw new ConflictError('Items can only be removed from draft or held invoices');
     }
+
     this.invoiceRepo.removeItem(itemId);
     logger.info('Item removed from invoice', { invoiceId: item.invoice_id, itemId });
     return this.getInvoice(item.invoice_id);
@@ -218,7 +234,7 @@ export class InvoiceService {
     return configService.verifyBillActionPassword(password);
   }
 
-  public reopenCompletedInvoice(invoiceId: number, password?: string) {
+  public reopenCompletedInvoice(invoiceId: number, password?: string, reason?: string) {
     if (password) {
       if (!configService.verifyBillActionPassword(password)) {
         throw new ConflictError('Invalid authorization password. Reopen denied.');
@@ -227,25 +243,39 @@ export class InvoiceService {
 
     const databaseProvider = (this.invoiceRepo as any).dbProvider;
     return databaseProvider.transaction(() => {
-      const { invoice, items } = this.invoiceRepo.findById(invoiceId);
+      const { invoice, items, payments } = this.invoiceRepo.findById(invoiceId);
       if (invoice.status !== 'completed' && invoice.status !== 'held') {
         throw new ConflictError('Only completed invoices can be reopened for editing');
       }
 
+      // Snapshot completed bill state before changing to draft
+      const oldSnapshot = {
+        invoice: { ...invoice },
+        items: items.map(it => ({ ...it })),
+        payments: (payments || []).map(p => ({ ...p }))
+      };
+
       this.invoiceRepo.setStatus(invoiceId, 'draft');
+
+      try {
+        db.prepare(`
+          UPDATE invoices 
+          SET edit_snapshot_json = ?,
+              edit_reason = ?
+          WHERE id = ?
+        `).run(JSON.stringify(oldSnapshot), reason || 'Reopened for bill edit', invoiceId);
+      } catch (err: any) {
+        logger.warn('Failed to record edit snapshot on invoice reopen', { error: String(err) });
+      }
 
       // Atomically restore stock in ledger & batches so subsequent completion re-deducts cleanly
       for (const item of items) {
+
         let targetVariantId = item.product_variant_id;
         let revGrams = item.quantity_grams;
         let revUnits = item.quantity_units;
 
-        const variant = db.prepare('SELECT parent_variant_id, yield_ratio FROM product_variants WHERE id = ?').get(item.product_variant_id) as any;
-        if (variant && variant.parent_variant_id && variant.yield_ratio && variant.yield_ratio > 0) {
-          targetVariantId = variant.parent_variant_id;
-          if (revGrams !== null) revGrams = Math.round(revGrams / variant.yield_ratio);
-          if (revUnits !== null) revUnits = Math.ceil(revUnits / variant.yield_ratio);
-        }
+
 
         try {
           inventoryLedgerService.recordMovement({
@@ -283,16 +313,12 @@ export class InvoiceService {
       // 1. Restore stock if invoice was completed
       if (invoice.status === 'completed') {
         for (const item of items) {
+
           let targetVariantId = item.product_variant_id;
           let revGrams = item.quantity_grams;
           let revUnits = item.quantity_units;
 
-          const variant = db.prepare('SELECT parent_variant_id, yield_ratio FROM product_variants WHERE id = ?').get(item.product_variant_id) as any;
-          if (variant && variant.parent_variant_id && variant.yield_ratio && variant.yield_ratio > 0) {
-            targetVariantId = variant.parent_variant_id;
-            if (revGrams !== null) revGrams = Math.round(revGrams / variant.yield_ratio);
-            if (revUnits !== null) revUnits = Math.ceil(revUnits / variant.yield_ratio);
-          }
+
 
           try {
             inventoryLedgerService.recordMovement({
@@ -411,7 +437,9 @@ export class InvoiceService {
   }
 
   public completeInvoice(input: {
-    invoiceId: number;
+    invoiceId?: number;
+    invoice_id?: number;
+    payments?: Array<{ method: string; amount_paise: number; reference_number?: string | null }>;
     allow_negative_stock_override?: boolean;
     manager_pin?: string;
     override_reason?: string;
@@ -421,11 +449,24 @@ export class InvoiceService {
     round_off_paise?: number;
     narration?: string | null;
     print_delivery_token?: boolean;
+    is_delivery?: boolean | number;
+    delivery_charge_paise?: number;
   }) {
-    const invoiceId = input.invoiceId;
+    const invoiceId = (input.invoiceId ?? input.invoice_id)!;
     // Run the checkout transaction sequence safely
     const databaseProvider = (this.invoiceRepo as any).dbProvider; // Fetch provider reference from repo
     return databaseProvider.transaction(() => {
+      if (input.payments && Array.isArray(input.payments)) {
+        for (const p of input.payments) {
+          this.invoiceRepo.addPayment({
+            invoice_id: invoiceId,
+            method: p.method as any,
+            amount_paise: p.amount_paise,
+            reference_number: p.reference_number ?? null,
+          });
+        }
+      }
+
       const { invoice, items, payments } = this.invoiceRepo.findById(invoiceId);
       if (invoice.status !== 'draft' && invoice.status !== 'held') {
         throw new ConflictError('Only draft or held invoices can be completed');
@@ -539,6 +580,8 @@ export class InvoiceService {
         round_off_paise: roundOffPaise,
         narration: input.narration ?? invoice.narration ?? null,
         print_delivery_token: input.print_delivery_token ? 1 : (invoice.print_delivery_token || 0),
+        is_delivery: input.is_delivery !== undefined ? (input.is_delivery ? 1 : 0) : ((invoice as any).is_delivery || 0),
+        delivery_charge_paise: input.delivery_charge_paise ?? ((invoice as any).delivery_charge_paise || 0),
         shop_name_snapshot: shopInfo.name,
         shop_address_snapshot: shopInfo.address,
       });
@@ -552,7 +595,7 @@ export class InvoiceService {
       for (const item of items) {
         const ledger = this.inventoryRepo.findLedgerByVariantId(item.product_variant_id);
         const variant = this.productRepo.findVariantById(item.product_variant_id);
-        const isWeight = variant.unit_type === 'weight';
+        const isWeight = variant.unit_type === 'weight' || variant.unit_type === 'live_dual';
         const available = ledger ? (isWeight ? (ledger.quantity_grams ?? 0) : (ledger.quantity_units ?? 0)) : 0;
         const requested = isWeight ? (item.quantity_grams ?? 0) : (item.quantity_units ?? 0);
         
@@ -699,6 +742,35 @@ export class InvoiceService {
 
       const completedResult = this.getInvoice(invoiceId);
 
+      // If invoice was reopened and edited, record audit log diff
+      try {
+        const invRow = db.prepare('SELECT edit_snapshot_json, edit_reason FROM invoices WHERE id = ?').get(invoiceId) as any;
+        if (invRow?.edit_snapshot_json) {
+          const newSnapshot = {
+            invoice: { ...completedResult.invoice },
+            items: (completedResult.items || []).map((it: any) => ({ ...it })),
+            payments: (completedResult.payments || []).map((p: any) => ({ ...p }))
+          };
+
+          db.prepare(`
+            INSERT INTO sale_edit_audit_logs (
+              invoice_id, edited_by, edit_reason, old_values_json, new_values_json
+            ) VALUES (?, ?, ?, ?, ?)
+          `).run(
+            invoiceId,
+            this.getCurrentUserId() || 1,
+            invRow.edit_reason || 'Reopened and edited completed invoice',
+            invRow.edit_snapshot_json,
+            JSON.stringify(newSnapshot)
+          );
+
+          db.prepare('UPDATE invoices SET edit_snapshot_json = NULL, edit_reason = NULL WHERE id = ?').run(invoiceId);
+          logger.info('Recorded sales invoice edit audit log', { invoiceId });
+        }
+      } catch (auditErr: any) {
+        logger.error('Failed to write sale edit audit log', auditErr);
+      }
+
       // Trigger Customer Intelligence calculation event
       if (invoice.customer_id) {
         try {
@@ -738,12 +810,7 @@ export class InvoiceService {
         let revGrams = item.quantity_grams;
         let revUnits = item.quantity_units;
 
-        const variant = db.prepare('SELECT parent_variant_id, yield_ratio FROM product_variants WHERE id = ?').get(item.product_variant_id) as any;
-        if (variant && variant.parent_variant_id && variant.yield_ratio && variant.yield_ratio > 0) {
-          targetVariantId = variant.parent_variant_id;
-          if (revGrams !== null) revGrams = Math.round(revGrams / variant.yield_ratio);
-          if (revUnits !== null) revUnits = Math.ceil(revUnits / variant.yield_ratio);
-        }
+
 
         // Atomic stock reversal on invoice void
         const { inventoryLedgerService } = require('../../../inventory/backend/service/inventory_ledger_service');
@@ -906,15 +973,7 @@ export class InvoiceService {
           let deltaUnits = !isWeight ? Math.abs(item.quantity_units ?? 0) : null;
           let targetVariantId = item.product_variant_id;
 
-          const variant = db.prepare('SELECT parent_variant_id, yield_ratio FROM product_variants WHERE id = ?').get(item.product_variant_id) as any;
-          if (variant && variant.parent_variant_id && variant.yield_ratio && variant.yield_ratio > 0) {
-            targetVariantId = variant.parent_variant_id;
-            if (isWeight && deltaGrams) {
-              deltaGrams = Math.round(deltaGrams / variant.yield_ratio);
-            } else if (!isWeight && deltaUnits) {
-              deltaUnits = Math.ceil(deltaUnits / variant.yield_ratio);
-            }
-          }
+
 
           const { inventoryLedgerService } = require('../../../inventory/backend/service/inventory_ledger_service');
           inventoryLedgerService.recordMovement({

@@ -731,6 +731,16 @@ export function installBrowserMock(): void {
             case 'inventory:adjust-stock':
               data = true;
               break;
+            case 'inventory:empty-inventory':
+              data = {
+                success: true,
+                message: 'Inventory successfully emptied (Browser Mock)',
+                variantsReset: 15,
+                batchesExhausted: 3,
+                liveBatchesClosed: 1,
+                fridgeItemsRemoved: 1,
+              };
+              break;
             case 'inventory:list-suppliers':
               data = mockSuppliers;
               break;
@@ -988,10 +998,46 @@ export function installBrowserMock(): void {
               data = { success: true, softDeleted: true };
               break;
             }
+            case 'products:deactivate-category': {
+              const cat = args[0]?.category;
+              mockAdminProducts.filter((x: any) => x.category === cat).forEach((p: any) => {
+                p.is_active = 0;
+                p.variants?.forEach((v: any) => { v.is_active = 0; });
+              });
+              data = null;
+              break;
+            }
+            case 'products:reactivate-category': {
+              const cat = args[0]?.category;
+              mockAdminProducts.filter((x: any) => x.category === cat).forEach((p: any) => {
+                p.is_active = 1;
+                p.variants?.forEach((v: any) => { v.is_active = 1; });
+              });
+              data = null;
+              break;
+            }
+            case 'products:delete-category': {
+              const cat = args[0]?.category;
+              const toRemove = mockAdminProducts.filter((x: any) => x.category === cat).map((x: any) => x.id);
+              for (const pid of toRemove) {
+                const idx = mockAdminProducts.findIndex((x: any) => x.id === pid);
+                if (idx !== -1) mockAdminProducts.splice(idx, 1);
+              }
+              data = null;
+              break;
+            }
             case 'products:get-rate-history': {
               const prodId = args[0]?.product_id || args[0]?.variant_id;
               const p = mockAdminProducts.find((x: any) => x.id === prodId || x.variants?.some((v: any) => v.id === prodId));
               data = p?.rateHistory || [];
+              break;
+            }
+            case 'products:get-deleted-archive': {
+              data = [];
+              break;
+            }
+            case 'products:restore-deleted': {
+              data = { success: true };
               break;
             }
             case 'products:bulk-import': {

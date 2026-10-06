@@ -218,6 +218,154 @@ export class YieldProcessingService {
     });
   }
 
+  public processLiveChickenBatch(input: {
+    batch_id: number;
+    live_weight_grams: number;
+    live_count: number;
+    processed_weight_grams: number;
+    yield_ratio_used: number;
+    processed_variant_id: number;
+    notes?: string;
+  }, userId: number = 1): any {
+    if (input.live_weight_grams <= 0) throw new ValidationError('Live weight used must be greater than 0 grams');
+    if (input.live_count <= 0) throw new ValidationError('Live bird count used must be greater than 0');
+    if (input.processed_weight_grams <= 0) throw new ValidationError('Processed weight yielded must be greater than 0 grams');
+    if (input.yield_ratio_used <= 0) throw new ValidationError('Yield ratio must be greater than 0');
+
+    const batch = db.prepare('SELECT * FROM live_chicken_batches WHERE id = ?').get(input.batch_id) as any;
+    if (!batch) throw new ValidationError(`Live chicken batch #${input.batch_id} not found`);
+
+    // Insufficient-stock guard
+    if (input.live_weight_grams > batch.remaining_weight_grams) {
+      throw new ValidationError(
+        `Requested live weight ${(input.live_weight_grams / 1000).toFixed(2)} kg exceeds batch remaining ${(batch.remaining_weight_grams / 1000).toFixed(2)} kg`
+      );
+    }
+    if (input.live_count > batch.remaining_count) {
+      throw new ValidationError(
+        `Requested live bird count ${input.live_count} exceeds batch remaining count ${batch.remaining_count}`
+      );
+    }
+
+    const processedVariant = db.prepare('SELECT * FROM product_variants WHERE id = ?').get(input.processed_variant_id) as any;
+    if (!processedVariant) throw new ValidationError(`Processed chicken variant #${input.processed_variant_id} not found`);
+
+    const databaseProvider = container.databaseProvider;
+    return databaseProvider.transaction(() => {
+      // 1. Cost propagation: liveCostPaise = (cost_per_kg_paise / 1000) * live_weight_grams
+      const liveCostPaise = (batch.cost_per_kg_paise / 1000) * input.live_weight_grams;
+      const costPerGramProcessed = liveCostPaise / input.processed_weight_grams;
+      const unitCostPaisePerKg = Math.round(costPerGramProcessed * 1000);
+
+      // 2. Decrement Live Chicken Batch
+      const newWeight = Math.max(0, batch.remaining_weight_grams - input.live_weight_grams);
+      const newCount = Math.max(0, batch.remaining_count - input.live_count);
+      const newStatus = (newWeight <= 0 || newCount <= 0) ? 'exhausted' : 'active';
+
+      db.prepare(`
+        UPDATE live_chicken_batches
+        SET remaining_weight_grams = ?,
+            remaining_count = ?,
+            status = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(newWeight, newCount, newStatus, batch.id);
+
+      // 3. Generate Event and Batch Numbers
+      const cleanDate = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 8);
+      const countRow = db.prepare('SELECT COUNT(*) as cnt FROM processing_events').get() as { cnt: number };
+      const seq = String(countRow.cnt + 1).padStart(4, '0');
+      const eventNumber = `PRC-CHK-${cleanDate}-${seq}`;
+      const outputBatchNumber = `BAT-PRC-${cleanDate}-${seq}`;
+
+      // 4. Create stock batch in Processed Chicken (Sellable Pool)
+      const outputBatch = stockBatchRepository.createBatch({
+        batch_number: outputBatchNumber,
+        product_variant_id: input.processed_variant_id,
+        received_date: new Date().toISOString(),
+        quantity_grams: input.processed_weight_grams,
+        quantity_units: null,
+        unit_cost_paise: unitCostPaisePerKg,
+        source_type: 'yield_processing',
+        source_ref_id: batch.id,
+      });
+
+      // 5. Update stock_ledger & transaction
+      container.inventoryRepository.updateLedgerStock(input.processed_variant_id, input.processed_weight_grams, null);
+      container.inventoryRepository.createTransaction({
+        product_variant_id: input.processed_variant_id,
+        transaction_type: 'manual_adjustment',
+        quantity_grams: input.processed_weight_grams,
+        quantity_units: null,
+        reference_id: outputBatch.id,
+      });
+
+      // 6. Insert Processing Event audit record
+      const insertStmt = db.prepare(`
+        INSERT INTO processing_events (
+          event_number, batch_id, live_weight_grams, live_count,
+          processed_weight_grams, yield_ratio_used, cost_per_gram_processed_paise,
+          processed_variant_id, destination_batch_id, created_by, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const insertRes = insertStmt.run(
+        eventNumber,
+        batch.id,
+        input.live_weight_grams,
+        input.live_count,
+        input.processed_weight_grams,
+        input.yield_ratio_used,
+        costPerGramProcessed,
+        input.processed_variant_id,
+        outputBatch.id,
+        userId || 1,
+        input.notes || null
+      );
+
+      // Also record inventory_ledger entry
+      const { inventoryLedgerService } = require('./inventory_ledger_service');
+      inventoryLedgerService.recordEntry({
+        product_variant_id: input.processed_variant_id,
+        branch_id: 1,
+        action_type: 'yield_in',
+        quantity_grams: input.processed_weight_grams,
+        quantity_units: null,
+        unit_cost_paise: unitCostPaisePerKg,
+        reference_type: 'processing_event',
+        reference_id: Number(insertRes.lastInsertRowid),
+        reference_number: eventNumber,
+        notes: `Processed Chicken from Batch ${batch.batch_number}`,
+        created_by: userId || 1,
+      });
+
+      return {
+        success: true,
+        event_number: eventNumber,
+        batch_number: outputBatchNumber,
+        processed_weight_grams: input.processed_weight_grams,
+        cost_per_kg_paise: unitCostPaisePerKg,
+      };
+    });
+  }
+
+  public listProcessingEvents(limit: number = 50): any[] {
+    return db.prepare(`
+      SELECT pe.*,
+        lcb.batch_number as live_batch_number,
+        pv.variant_name as processed_variant_name,
+        p.name as processed_product_name,
+        u.username as created_by_user
+      FROM processing_events pe
+      JOIN live_chicken_batches lcb ON lcb.id = pe.batch_id
+      LEFT JOIN product_variants pv ON pv.id = pe.processed_variant_id
+      LEFT JOIN products p ON p.id = pv.product_id
+      LEFT JOIN users u ON u.id = pe.created_by
+      ORDER BY pe.created_at DESC
+      LIMIT ?
+    `).all(limit);
+  }
+
   public listYieldRuns(): any[] {
     return db.prepare(`
       SELECT ypr.*, pv.variant_name as raw_variant_name, p.name as raw_product_name, u.username as processed_by_user

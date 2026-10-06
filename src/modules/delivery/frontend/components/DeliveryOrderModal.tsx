@@ -97,8 +97,8 @@ export const DeliveryOrderModal: React.FC<DeliveryOrderModalProps> = ({
   // Determine active zone
   const activeZone = zones.find(z => z.id === selectedZoneId) || zones.find(z => z.is_default) || zones[0];
   
-  // Calculate delivery charge
-  let computedDeliveryFee = activeZone ? activeZone.delivery_charge_paise : 3000;
+  // Calculate delivery charge (Default to Free Delivery: ₹0)
+  let computedDeliveryFee = activeZone ? activeZone.delivery_charge_paise : 0;
   if (activeZone?.free_delivery_above_paise && subtotalPaise >= activeZone.free_delivery_above_paise) {
     computedDeliveryFee = 0;
   }

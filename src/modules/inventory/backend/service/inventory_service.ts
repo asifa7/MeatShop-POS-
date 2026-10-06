@@ -83,18 +83,7 @@ export class InventoryService {
       throw new ValidationError('Invalid stock adjustment input', parsed.error.flatten());
     }
 
-    if (parsed.data.adjustment_type === 'stock_in') {
-      const variantRow = db.prepare(`
-        SELECT pv.is_processed_cut as variant_cut, p.is_processed_cut as product_cut, p.name as product_name, p.stock_classification
-        FROM product_variants pv
-        JOIN products p ON pv.product_id = p.id
-        WHERE pv.id = ?
-      `).get(parsed.data.product_variant_id) as any;
 
-      if (variantRow && variantRow.stock_classification === 'live_yield') {
-        throw new ValidationError(`Live/Yield-tracked products (${variantRow.product_name}) cannot be added directly via Stock In. Use Yield Processing to break down live stock.`);
-      }
-    }
 
     dbManager.transaction(() => {
       // 1. Create stock adjustment record
@@ -120,10 +109,7 @@ export class InventoryService {
         ? parsed.data.quantity_units * multiplier 
         : null;
 
-      // 3. Update stock ledger running balance
-      this.inventoryRepo.updateLedgerStock(parsed.data.product_variant_id, deltaGrams, deltaUnits);
-
-      // 4. Create stock transaction record
+      // 3. Create stock transaction record
       this.inventoryRepo.createTransaction({
         product_variant_id: parsed.data.product_variant_id,
         transaction_type: 'manual_adjustment',
@@ -246,6 +232,48 @@ export class InventoryService {
         notes: `Purchase from Supplier #${parsed.data.supplier_id}`,
         created_by: parsed.data.created_by,
       });
+
+      // 5. If live chicken, also record in live_chicken_batches for yield/mortality tracking
+      try {
+        const variantRow = db.prepare(`
+          SELECT pv.*, p.category, p.name as product_name, p.stock_classification 
+          FROM product_variants pv 
+          JOIN products p ON pv.product_id = p.id 
+          WHERE pv.id = ?
+        `).get(parsed.data.product_variant_id) as any;
+
+        const isLiveChicken = (variantRow?.unit_type === 'live_dual' || variantRow?.stock_classification === 'live_yield') &&
+          (variantRow?.category?.toLowerCase().includes('chicken') || variantRow?.product_name?.toLowerCase().includes('chicken'));
+
+        if (isLiveChicken) {
+          const liveWeightGrams = parsed.data.quantity_grams ?? 0;
+          const countVal = Math.max(1, Math.round((liveWeightGrams || 1600) / 1600));
+          const cleanDate = new Date().toISOString().slice(0, 10).replace(/[^0-9]/g, '');
+          const countRow = db.prepare('SELECT COUNT(*) as cnt FROM live_chicken_batches').get() as { cnt: number };
+          const seq = String((countRow?.cnt || 0) + 1).padStart(4, '0');
+          const batchNum = `BAT-LIVE-${cleanDate}-${seq}`;
+
+          db.prepare(`
+            INSERT INTO live_chicken_batches (
+              batch_number, supplier_id, purchase_date,
+              cost_per_kg_paise, initial_weight_grams, initial_count,
+              remaining_weight_grams, remaining_count, status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+          `).run(
+            batchNum,
+            parsed.data.supplier_id,
+            new Date().toISOString().slice(0, 10),
+            parsed.data.cost_paise,
+            liveWeightGrams,
+            countVal,
+            liveWeightGrams,
+            countVal,
+            `Direct Purchase #${purchase.id}`
+          );
+        }
+      } catch (e: any) {
+        logger.warn(`Live chicken batch tracking notice on purchase: ${e.message}`);
+      }
 
       logger.info('Purchase transaction recorded and stock updated', {
         purchaseId: purchase.id,
@@ -480,9 +508,9 @@ export class InventoryService {
         // Fallback if no active batch stock
         weightedUnitCostPaise = r.cost_price_paise_per_unit || 0;
         if (weightedUnitCostPaise <= 0) {
-          const vRow = db.prepare('SELECT last_purchase_cost_paise, unit_cost_paise_cache, current_rate_paise_per_unit FROM product_variants WHERE id = ?').get(r.product_variant_id) as any;
+          const vRow = db.prepare('SELECT last_purchase_cost_paise, unit_cost_paise_cache, last_purchase_cost, current_rate_paise_per_unit FROM product_variants WHERE id = ?').get(r.product_variant_id) as any;
           if (vRow) {
-            weightedUnitCostPaise = vRow.last_purchase_cost_paise || vRow.unit_cost_paise_cache || Math.round((vRow.current_rate_paise_per_unit || 0) * 0.7);
+            weightedUnitCostPaise = vRow.last_purchase_cost_paise || vRow.unit_cost_paise_cache || vRow.last_purchase_cost || Math.round((vRow.current_rate_paise_per_unit || 0) * 0.7);
           }
         }
       }
@@ -1093,128 +1121,16 @@ const label = isUnused
    * Get all active refrigerator stock items (refrigerator_direct classification)
    * Aggregated per product variant with oldest batch duration.
    */
+  /**
+   * Get all active refrigerator stock items (Isolated Pool from refrigerator_stock table).
+   */
   public getRefrigeratorStock(branchId: number = 1): any[] {
-    const rawProducts = db.prepare(`
-      SELECT 
-        pv.id as product_variant_id,
-        pv.variant_name,
-        pv.unit_type,
-        pv.cost_price_paise_per_unit,
-        pv.safety_threshold_grams,
-        pv.safety_threshold_units,
-        p.id as product_id,
-        p.name as product_name,
-        p.product_code,
-        p.category,
-        p.stock_classification,
-        p.created_at as product_created_at,
-        sl.quantity_grams as ledger_grams,
-        sl.quantity_units as ledger_units
-      FROM product_variants pv
-      JOIN products p ON pv.product_id = p.id
-      LEFT JOIN stock_ledger sl ON sl.product_variant_id = pv.id
-      WHERE p.stock_classification IN ('refrigerator_direct', 'refrigerator')
-         OR pv.id IN (
-           SELECT DISTINCT product_variant_id 
-           FROM product_stock_batches 
-           WHERE status = 'active' 
-             AND (COALESCE(current_quantity_grams, 0) > 0 OR COALESCE(current_quantity_units, 0) > 0)
-         )
-         OR (COALESCE(sl.quantity_grams, 0) > 0 OR COALESCE(sl.quantity_units, 0) > 0)
-      ORDER BY p.name ASC, pv.variant_name ASC
-    `).all() as any[];
-
-    const now = Date.now();
-    const result: any[] = [];
-
-    for (const prod of rawProducts) {
-      const isWeight = prod.unit_type === 'weight' || prod.unit_type === 'live_dual';
-      
-      // Fetch all active batches for this product variant
-      const batches = db.prepare(`
-        SELECT 
-          id as batch_id,
-          batch_number,
-          received_date,
-          original_batch_date,
-          created_at,
-          current_quantity_grams,
-          current_quantity_units,
-          unit_cost_paise
-        FROM product_stock_batches
-        WHERE product_variant_id = ? 
-          AND status = 'active'
-          AND (
-            (current_quantity_grams IS NOT NULL AND current_quantity_grams > 0)
-            OR (current_quantity_units IS NOT NULL AND current_quantity_units > 0)
-          )
-        ORDER BY COALESCE(original_batch_date, received_date, date(created_at)) ASC, id ASC
-      `).all(prod.product_variant_id) as any[];
-
-      let totalQty = 0;
-      let oldestBatchDateStr: string | null = null;
-      let oldestBatchNumber: string | null = null;
-      let oldestBatchId: number | null = null;
-
-      if (batches.length > 0) {
-        for (const b of batches) {
-          const bQty = isWeight ? (b.current_quantity_grams || 0) / 1000 : (b.current_quantity_units || 0);
-          totalQty += bQty;
-        }
-        const oldest = batches[0];
-        oldestBatchDateStr = oldest.original_batch_date || oldest.received_date || (oldest.created_at ? String(oldest.created_at).slice(0, 10) : null);
-        oldestBatchNumber = oldest.batch_number || null;
-        oldestBatchId = oldest.batch_id || null;
-      } else {
-        // Fallback to stock_ledger if no batches but ledger has positive stock
-        const ledgerQty = isWeight ? (prod.ledger_grams || 0) / 1000 : (prod.ledger_units || 0);
-        totalQty = Math.max(0, ledgerQty);
-        if (totalQty > 0) {
-          const lastMovement = db.prepare('SELECT date(created_at) as last_date FROM inventory_ledger WHERE product_variant_id = ? ORDER BY id DESC LIMIT 1').get(prod.product_variant_id) as any;
-          oldestBatchDateStr = lastMovement?.last_date || new Date().toISOString().slice(0, 10);
-          oldestBatchNumber = 'LEDGER-STOCK';
-        }
-      }
-
-      // If total stock is 0 and no batches, skip
-      if (totalQty <= 0 && batches.length === 0) {
-        continue;
-      }
-
-      const entryDateStr = oldestBatchDateStr || new Date().toISOString().slice(0, 10);
-      const parsedDate = new Date(entryDateStr);
-      const entryTime = isNaN(parsedDate.getTime()) ? now : parsedDate.getTime();
-      const diffDays = Math.max(0, Math.floor((now - entryTime) / (1000 * 60 * 60 * 24)));
-
-      const safetyThreshold = isWeight 
-        ? ((prod.safety_threshold_grams || 0) / 1000)
-        : (prod.safety_threshold_units || 0);
-
-      result.push({
-        product_variant_id: prod.product_variant_id,
-        product_id: prod.product_id,
-        product_name: prod.product_name || 'Unnamed Product',
-        variant_name: prod.variant_name || '',
-        product_code: prod.product_code || '',
-        category: prod.category || 'General',
-        unit_type: prod.unit_type || 'weight',
-        quantity: isNaN(totalQty) ? 0 : totalQty,
-        safety_threshold: safetyThreshold,
-        unit_cost_paise: prod.cost_price_paise_per_unit || (batches[0]?.unit_cost_paise || 0),
-        stored_at: entryDateStr,
-        days_in_fridge: isNaN(diffDays) ? 0 : diffDays,
-        oldest_batch_id: oldestBatchId,
-        oldest_batch_number: oldestBatchNumber,
-        batch_count: batches.length,
-      });
-    }
-
-    return result;
+    const { refrigeratorService } = require('./refrigerator_service');
+    return refrigeratorService.getActiveRefrigeratorStock();
   }
 
   /**
-   * Record "Take Out" action on refrigerator stock.
-   * Atomically reduces batches (FIFO if no specific batch), updates stock ledger, and logs 'fridge_removal' to inventory_ledger.
+   * Record removal from refrigerator stock.
    */
   public recordFridgeRemoval(input: {
     batch_id?: number;
@@ -1224,140 +1140,42 @@ const label = isUnused
     reason?: string;
     branch_id?: number;
     user_id?: number;
+    removal_type?: 'sold' | 'transfer' | 'wastage' | 'staff';
   }): { success: boolean; message: string } {
-    if (!input.quantity || input.quantity <= 0) {
-      throw new ValidationError('Removal quantity must be greater than 0');
+    const { refrigeratorService } = require('./refrigerator_service');
+    const isWeight = input.unit_type === 'weight' || input.unit_type === 'live_dual';
+    const fridgeStockId = (input as any).refrigerator_stock_id || input.batch_id || input.product_variant_id;
+    let removalType = input.removal_type;
+    if (!removalType) {
+      const rLower = (input.reason || '').toLowerCase();
+      if (rLower.includes('regular') || rLower.includes('transfer') || rLower.includes('kitchen')) {
+        removalType = 'transfer';
+      } else if (rLower.includes('sold') || rLower.includes('sale')) {
+        removalType = 'sold';
+      } else if (rLower.includes('staff')) {
+        removalType = 'staff';
+      } else {
+        removalType = 'wastage';
+      }
     }
 
-    return dbManager.transaction(() => {
-      const branchId = input.branch_id || 1;
-      const isWeight = input.unit_type === 'weight' || input.unit_type === 'live_dual';
-      const deltaGrams = isWeight ? Math.round(input.quantity * 1000) : null;
-      const deltaUnits = !isWeight ? input.quantity : null;
+    refrigeratorService.executeRemoval({
+      refrigerator_stock_id: fridgeStockId,
+      removal_type: removalType,
+      quantity_grams: isWeight ? Math.round(input.quantity * 1000) : null,
+      count: !isWeight ? input.quantity : null,
+      destination_mutton_variant_id: input.product_variant_id,
+      reason_notes: input.reason,
+    }, input.user_id || 1);
 
-      // Fetch variant & product info
-      const variant = db.prepare(`
-        SELECT pv.*, p.id as prod_id, p.name as prod_name, p.product_code 
-        FROM product_variants pv 
-        JOIN products p ON pv.product_id = p.id 
-        WHERE pv.id = ?
-      `).get(input.product_variant_id) as any;
-
-      if (!variant) throw new NotFoundError('Product variant not found');
-
-      // 1. If batch ID given, deduct batch stock; otherwise apply FIFO across active batches
-      if (input.batch_id) {
-        const batch = db.prepare('SELECT * FROM product_stock_batches WHERE id = ?').get(input.batch_id) as any;
-        if (batch) {
-          if (isWeight && batch.current_quantity_grams != null) {
-            const rem = Math.max(0, batch.current_quantity_grams - (deltaGrams || 0));
-            db.prepare('UPDATE product_stock_batches SET current_quantity_grams = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-              .run(rem, rem <= 0 ? 'exhausted' : 'active', batch.id);
-          } else if (!isWeight && batch.current_quantity_units != null) {
-            const rem = Math.max(0, batch.current_quantity_units - (deltaUnits || 0));
-            db.prepare('UPDATE product_stock_batches SET current_quantity_units = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-              .run(rem, rem <= 0 ? 'exhausted' : 'active', batch.id);
-          }
-        }
-      } else {
-        const activeBatches = db.prepare(`
-          SELECT * FROM product_stock_batches
-          WHERE product_variant_id = ? AND status = 'active'
-          ORDER BY COALESCE(received_date, date(created_at)) ASC, id ASC
-        `).all(input.product_variant_id) as any[];
-
-        let remGrams = deltaGrams;
-        let remUnits = deltaUnits;
-
-        for (const batch of activeBatches) {
-          if (isWeight && remGrams && remGrams > 0) {
-            const avail = batch.current_quantity_grams || 0;
-            if (avail <= 0) continue;
-            const deduct = Math.min(avail, remGrams);
-            const newGrams = avail - deduct;
-            remGrams -= deduct;
-            db.prepare('UPDATE product_stock_batches SET current_quantity_grams = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-              .run(newGrams, newGrams <= 0 ? 'exhausted' : 'active', batch.id);
-          } else if (!isWeight && remUnits && remUnits > 0) {
-            const avail = batch.current_quantity_units || 0;
-            if (avail <= 0) continue;
-            const deduct = Math.min(avail, remUnits);
-            const newUnits = avail - deduct;
-            remUnits -= deduct;
-            db.prepare('UPDATE product_stock_batches SET current_quantity_units = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-              .run(newUnits, newUnits <= 0 ? 'exhausted' : 'active', batch.id);
-          }
-        }
-      }
-
-      // 2. Deduct running stock in stock_ledger
-      this.inventoryRepo.updateLedgerStock(
-        input.product_variant_id,
-        deltaGrams !== null ? -deltaGrams : null,
-        deltaUnits !== null ? -deltaUnits : null
-      );
-
-      // 3. Create standard stock transaction
-      this.inventoryRepo.createTransaction({
-        product_variant_id: input.product_variant_id,
-        transaction_type: 'manual_adjustment',
-        quantity_grams: deltaGrams !== null ? -deltaGrams : null,
-        quantity_units: deltaUnits !== null ? -deltaUnits : null,
-        reference_id: input.batch_id ?? 0,
-      });
-
-      // Generate reference number
-      const cleanDate = new Date().toISOString().slice(0, 10).replace(/[^0-9]/g, '');
-      const countRow = db.prepare(`SELECT COUNT(*) as c FROM inventory_ledger WHERE action_type = 'fridge_removal' AND date(created_at) = date('now')`).get() as any;
-      const seq = String((countRow?.c || 0) + 1).padStart(3, '0');
-      const refNumber = `FRG-OUT-${cleanDate}-${seq}`;
-
-      const userId = input.user_id || authService.getCurrentUserId() || 1;
-      const user = db.prepare('SELECT full_name FROM users WHERE id = ?').get(userId) as any;
-      const userName = user?.full_name || 'Admin / Cashier';
-
-      // 4. Log to inventory_ledger & sync stock balance
-      const ledgerRes = inventoryLedgerService.recordMovement({
-        product_variant_id: input.product_variant_id,
-        branch_id: branchId,
-        action_type: 'FRIDGE_OUT',
-        quantity_grams: deltaGrams,
-        quantity_units: deltaUnits,
-        batch_id: input.batch_id || null,
-        reference_type: 'manual',
-        reference_number: refNumber,
-        notes: input.reason ? `Fridge Take Out: ${input.reason}` : 'Removed from refrigerator',
-        created_by: userId,
-      });
-      const ledgerId = ledgerRes.ledger_id;
-
-      const slip = {
-        action_type: 'OUT' as const,
-        reference_number: refNumber,
-        ledger_id: ledgerId,
-        product_name: variant.prod_name,
-        variant_name: variant.variant_name,
-        product_code: variant.product_code || '-',
-        quantity: input.quantity,
-        unit: isWeight ? 'kg' : 'pcs',
-        reason: input.reason || 'Moved to Kitchen Prep',
-        created_at: new Date().toISOString(),
-        user_name: userName,
-      };
-
-      return {
-        success: true,
-        message: `Successfully removed ${input.quantity} ${isWeight ? 'kg' : 'pcs'} from Refrigerator Stock.`,
-        ledger_id: ledgerId,
-        reference_number: refNumber,
-        slip,
-      };
-    });
+    return {
+      success: true,
+      message: `Successfully removed ${input.quantity} ${isWeight ? 'kg' : 'pcs'} from Refrigerator Stock.`,
+    };
   }
 
   /**
-   * Record "Put In / Add Stock" into Refrigerator.
-   * Sets default date to today, inserts active batch, updates stock ledger, sets refrigerator classification, and logs 'fridge_deposit' to inventory_ledger.
+   * Record "Move into Refrigerator".
    */
   public recordFridgeAddition(input: {
     product_variant_id: number;
@@ -1365,185 +1183,243 @@ const label = isUnused
     unit_type: string;
     entry_date?: string;
     cost_price_paise_per_unit?: number;
-    batch_number?: string;
     notes?: string;
     branch_id?: number;
     user_id?: number;
-  }): { success: boolean; message: string; batch_id: number; batch_number: string; ledger_id: number; reference_number: string; slip: any } {
-    if (!input.quantity || input.quantity <= 0) {
-      throw new ValidationError('Addition quantity must be greater than 0');
-    }
+    item_name?: string;
+    item_type?: 'leg' | 'brain' | 'head' | 'liver' | 'meat' | 'custom';
+  }): { success: boolean; message: string; batch_id: number; batch_number: string } {
+    const { refrigeratorService } = require('./refrigerator_service');
+    const isWeight = input.unit_type === 'weight' || input.unit_type === 'live_dual';
+    const variant = db.prepare('SELECT pv.*, p.name as prod_name FROM product_variants pv JOIN products p ON pv.product_id = p.id WHERE pv.id = ?').get(input.product_variant_id) as any;
 
-    return dbManager.transaction(() => {
-      const branchId = input.branch_id || 1;
-      const isWeight = input.unit_type === 'weight' || input.unit_type === 'live_dual';
-      const deltaGrams = isWeight ? Math.round(input.quantity * 1000) : null;
-      const deltaUnits = !isWeight ? input.quantity : null;
-      const entryDate = input.entry_date || new Date().toISOString().slice(0, 10);
+    const row = refrigeratorService.moveToRefrigerator({
+      item_name: input.item_name || variant?.prod_name || 'Mutton Cut',
+      item_type: input.item_type || 'meat',
+      unit_type: isWeight ? 'weight' : 'piece',
+      quantity_grams: isWeight ? Math.round(input.quantity * 1000) : null,
+      count: !isWeight ? input.quantity : null,
+      cost_paise_per_unit: input.cost_price_paise_per_unit || (variant?.cost_price_paise_per_unit || 0),
+      date_added: input.entry_date,
+      notes: input.notes,
+      source_mutton_variant_id: input.product_variant_id,
+    }, input.user_id || 1);
 
-      // 1. Generate clean batch number if not given
-      const countRow = db.prepare(`SELECT COUNT(*) as c FROM product_stock_batches WHERE date(created_at) = date('now')`).get() as any;
-      const seq = String((countRow?.c || 0) + 1).padStart(3, '0');
-      const cleanDate = entryDate.replace(/[^0-9]/g, '').slice(0, 8);
-      const batchNumber = input.batch_number?.trim() || `FRG-${cleanDate}-${seq}`;
-
-      // 2. Fetch variant & product info
-      const variant = db.prepare(`
-        SELECT pv.*, p.id as prod_id, p.name as prod_name, p.product_code, p.stock_classification 
-        FROM product_variants pv 
-        JOIN products p ON pv.product_id = p.id 
-        WHERE pv.id = ?
-      `).get(input.product_variant_id) as any;
-
-      if (!variant) throw new NotFoundError('Product variant not found');
-
-      // Ensure stock_classification is set to refrigerator_direct
-      if (variant.stock_classification !== 'refrigerator_direct') {
-        db.prepare(`UPDATE products SET stock_classification = 'refrigerator_direct', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(variant.prod_id);
-      }
-
-      const unitCostPaise = input.cost_price_paise_per_unit != null && input.cost_price_paise_per_unit >= 0
-        ? input.cost_price_paise_per_unit
-        : (variant.cost_price_paise_per_unit || 0);
-
-      // 3. Insert active batch
-      // 3. Insert active batch with preserved original batch date
-      const originalBatchDate = (input as any).original_batch_date || entryDate;
-      const originalBatchId = (input as any).original_batch_id || null;
-      const isFridgeReturn = Boolean((input as any).is_return || (input as any).original_batch_date);
-
-      const insBatch = db.prepare(`
-        INSERT INTO product_stock_batches (
-          product_variant_id, batch_number, initial_quantity_grams, current_quantity_grams,
-          initial_quantity_units, current_quantity_units, unit_cost_paise, received_date,
-          original_batch_date, original_batch_id, source_type, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'initial_balance', 'active', CURRENT_TIMESTAMP)
-      `).run(
-        input.product_variant_id,
-        batchNumber,
-        deltaGrams,
-        deltaGrams,
-        deltaUnits,
-        deltaUnits,
-        unitCostPaise,
-        entryDate,
-        originalBatchDate,
-        originalBatchId
-      );
-
-      const batchId = insBatch.lastInsertRowid as number;
-
-      // 4. Generate reference number
-      const inCountRow = db.prepare(`SELECT COUNT(*) as c FROM inventory_ledger WHERE action_type IN ('fridge_deposit', 'FRIDGE_RETURN') AND date(created_at) = date('now')`).get() as any;
-      const inSeq = String((inCountRow?.c || 0) + 1).padStart(3, '0');
-      const refNumber = `FRG-IN-${cleanDate}-${inSeq}`;
-
-      const userId = input.user_id || authService.getCurrentUserId() || 1;
-      const user = db.prepare('SELECT full_name FROM users WHERE id = ?').get(userId) as any;
-      const userName = user?.full_name || 'Admin / Cashier';
-
-      // 5. Log to inventory_ledger and sync stock_ledger balance
-      const ledgerRes = inventoryLedgerService.recordMovement({
-        product_variant_id: input.product_variant_id,
-        branch_id: branchId,
-        action_type: isFridgeReturn ? 'FRIDGE_RETURN' : 'OTHER_IN',
-        quantity_grams: deltaGrams,
-        quantity_units: deltaUnits,
-        unit_cost_paise: unitCostPaise,
-        batch_id: batchId,
-        reference_type: 'manual',
-        reference_number: refNumber,
-        notes: input.notes ? `Fridge Deposit: ${input.notes}` : `Stock Added to Refrigerator (#${batchNumber})`,
-        created_by: userId,
-      });
-      const ledgerId = ledgerRes.ledger_id;
-
-      const slip = {
-        action_type: 'IN' as const,
-        reference_number: refNumber,
-        ledger_id: ledgerId,
-        product_name: variant.prod_name,
-        variant_name: variant.variant_name,
-        product_code: variant.product_code || '-',
-        quantity: input.quantity,
-        unit: isWeight ? 'kg' : 'pcs',
-        reason: input.notes || 'Stock Added to Refrigerator',
-        created_at: new Date().toISOString(),
-        user_name: userName,
-        batch_number: batchNumber,
-      };
-
-      return {
-        success: true,
-        message: `Successfully added ${input.quantity} ${isWeight ? 'kg' : 'pcs'} into Refrigerator Stock (${batchNumber}).`,
-        batch_id: batchId,
-        batch_number: batchNumber,
-        ledger_id: ledgerId,
-        reference_number: refNumber,
-        slip,
-      };
-    });
+    return {
+      success: true,
+      message: `Successfully added ${input.quantity} ${isWeight ? 'kg' : 'pcs'} into Refrigerator Stock.`,
+      batch_id: row.id,
+      batch_number: `FRG-${row.id}`,
+    };
   }
 
   /**
-   * Get Cold Storage / Refrigerator In-Out Movement Activity Log
+   * Get Cold Storage / Refrigerator In-Out Movement Activity Log.
    */
   public getFridgeActivityLog(filters?: { branchId?: number; date?: string; limit?: number }): any[] {
-    const branchId = filters?.branchId || 1;
-    const dateFilter = filters?.date;
-    const limit = filters?.limit || 100;
+    const { refrigeratorService } = require('./refrigerator_service');
+    return refrigeratorService.listRemovalEvents(filters?.limit || 100);
+  }
 
-    if (dateFilter) {
-      return db.prepare(`
-        SELECT 
-          il.id,
-          il.created_at,
-          il.action_type,
-          il.quantity_grams,
-          il.quantity_units,
-          il.notes,
-          il.reference_type,
-          il.reference_number,
-          p.name as product_name,
-          p.product_code,
-          pv.variant_name,
-          pv.unit_type,
-          u.full_name as user_name
-        FROM inventory_ledger il
-        JOIN product_variants pv ON pv.id = il.product_variant_id
-        JOIN products p ON p.id = pv.product_id
-        LEFT JOIN users u ON u.id = il.created_by
-        WHERE il.branch_id = ? 
-          AND date(il.created_at) = date(?)
-          AND (il.action_type IN ('fridge_deposit', 'fridge_removal') OR il.notes LIKE '%fridge%' OR il.notes LIKE '%refrigerator%')
-        ORDER BY il.created_at ASC, il.id ASC
-      `).all(branchId, dateFilter) as any[];
-    }
+  /**
+   * Empty / reset inventory stock by scope (all, category, or specific products).
+   * Atomically resets stock_ledger to 0, marks product_stock_batches as exhausted,
+   * logs adjustment movements in inventory_ledger to maintain audit integrity,
+   * resets product_variants.current_stock to 0, and optionally clears live chicken batches
+   * and refrigerator stock.
+   */
+  public emptyInventory(input: {
+    scope: 'all' | 'category' | 'products';
+    category?: string;
+    productIds?: number[];
+    variantIds?: number[];
+    includeLiveBirds?: boolean;
+    includeRefrigerator?: boolean;
+    reason?: string;
+    userId?: number;
+  }): {
+    success: boolean;
+    message: string;
+    variantsReset: number;
+    batchesExhausted: number;
+    liveBatchesClosed: number;
+    fridgeItemsRemoved: number;
+  } {
+    const userId = input.userId ?? authService.getCurrentUserId() ?? 1;
+    const reason = input.reason?.trim() || 'Manual stock empty from Settings';
 
-    return db.prepare(`
-      SELECT 
-        il.id,
-        il.created_at,
-        il.action_type,
-        il.quantity_grams,
-        il.quantity_units,
-        il.notes,
-        il.reference_type,
-        il.reference_number,
-        p.name as product_name,
-        p.product_code,
-        pv.variant_name,
-        pv.unit_type,
-        u.full_name as user_name
-      FROM inventory_ledger il
-      JOIN product_variants pv ON pv.id = il.product_variant_id
-      JOIN products p ON p.id = pv.product_id
-      LEFT JOIN users u ON u.id = il.created_by
-      WHERE il.branch_id = ? 
-        AND (il.action_type IN ('fridge_deposit', 'fridge_removal') OR il.notes LIKE '%fridge%' OR il.notes LIKE '%refrigerator%')
-      ORDER BY il.created_at DESC, il.id DESC
-      LIMIT ?
-    `).all(branchId, limit) as any[];
+    return dbManager.transaction(() => {
+      // 1. Identify target product_variants based on scope
+      let targetVariants: Array<{ id: number; product_id: number; variant_name: string; prod_name: string; category: string; unit_type: string }> = [];
+
+      if (input.scope === 'all') {
+        targetVariants = db.prepare(`
+          SELECT pv.id, pv.product_id, pv.variant_name, p.name as prod_name, p.category, pv.unit_type
+          FROM product_variants pv
+          JOIN products p ON pv.product_id = p.id
+        `).all() as any[];
+      } else if (input.scope === 'category') {
+        if (!input.category) {
+          throw new ValidationError('Category must be specified when emptying by category');
+        }
+        targetVariants = db.prepare(`
+          SELECT pv.id, pv.product_id, pv.variant_name, p.name as prod_name, p.category, pv.unit_type
+          FROM product_variants pv
+          JOIN products p ON pv.product_id = p.id
+          WHERE LOWER(p.category) = LOWER(?)
+        `).all(input.category) as any[];
+      } else if (input.scope === 'products') {
+        const vIds = input.variantIds || [];
+        const pIds = input.productIds || [];
+        if (vIds.length === 0 && pIds.length === 0) {
+          throw new ValidationError('At least one product or variant must be selected');
+        }
+        if (vIds.length > 0) {
+          const placeholders = vIds.map(() => '?').join(',');
+          targetVariants = db.prepare(`
+            SELECT pv.id, pv.product_id, pv.variant_name, p.name as prod_name, p.category, pv.unit_type
+            FROM product_variants pv
+            JOIN products p ON pv.product_id = p.id
+            WHERE pv.id IN (${placeholders})
+          `).all(...vIds) as any[];
+        } else {
+          const placeholders = pIds.map(() => '?').join(',');
+          targetVariants = db.prepare(`
+            SELECT pv.id, pv.product_id, pv.variant_name, p.name as prod_name, p.category, pv.unit_type
+            FROM product_variants pv
+            JOIN products p ON pv.product_id = p.id
+            WHERE pv.product_id IN (${placeholders})
+          `).all(...pIds) as any[];
+        }
+      }
+
+      let variantsReset = 0;
+      let batchesExhausted = 0;
+
+      // 2. For each target variant, calculate delta and zero out stock
+      for (const variant of targetVariants) {
+        const isWeight = variant.unit_type === 'weight' || variant.unit_type === 'live_dual';
+
+        // Check stock_ledger current quantity
+        const stockRow = db.prepare(`
+          SELECT quantity_grams, quantity_units
+          FROM stock_ledger
+          WHERE product_variant_id = ?
+        `).get(variant.id) as any;
+
+        const currentGrams = stockRow?.quantity_grams ?? 0;
+        const currentUnits = stockRow?.quantity_units ?? 0;
+
+        // If there was existing non-zero stock, record an inventory_ledger adjustment so running sum is zero
+        if (currentGrams !== 0 || currentUnits !== 0) {
+          const deltaGrams = isWeight ? -currentGrams : null;
+          const deltaUnits = !isWeight ? -currentUnits : null;
+
+          db.prepare(`
+            INSERT INTO inventory_ledger (
+              product_variant_id, product_id, branch_id, action_type,
+              quantity_grams, quantity_units,
+              running_balance_grams, running_balance_units,
+              reason_code, notes, created_by, created_at
+            ) VALUES (?, ?, 1, 'STOCK_ADJUSTMENT', ?, ?, 0, 0, 'manual_empty', ?, ?, CURRENT_TIMESTAMP)
+          `).run(variant.id, variant.product_id, deltaGrams, deltaUnits, reason, userId);
+
+          variantsReset++;
+        }
+
+        // Reset stock_ledger row
+        if (stockRow) {
+          db.prepare(`
+            UPDATE stock_ledger
+            SET quantity_grams = 0, quantity_units = 0, quantity_count = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE product_variant_id = ?
+          `).run(variant.id);
+        } else {
+          db.prepare(`
+            INSERT INTO stock_ledger (
+              product_variant_id, quantity_grams, quantity_units, location_id,
+              safety_threshold_grams, safety_threshold_units, updated_at
+            ) VALUES (?, 0, 0, 1, 5000, 10, CURRENT_TIMESTAMP)
+          `).run(variant.id);
+        }
+
+        // Reset product_variants cached stock
+        db.prepare(`
+          UPDATE product_variants
+          SET current_stock = 0, inventory_value = 0
+          WHERE id = ?
+        `).run(variant.id);
+
+        // Exhaust active stock batches for this variant
+        const batchRes = db.prepare(`
+          UPDATE product_stock_batches
+          SET current_quantity_grams = 0, current_quantity_units = 0, status = 'exhausted', updated_at = CURRENT_TIMESTAMP
+          WHERE product_variant_id = ? AND status = 'active'
+        `).run(variant.id);
+
+        batchesExhausted += batchRes.changes;
+
+        // Clean up pending events for this variant
+        try {
+          db.prepare(`DELETE FROM pending_stock_events WHERE product_variant_id = ?`).run(variant.id);
+        } catch (_) {}
+      }
+
+      // 3. Handle Live Chicken Batches
+      let liveBatchesClosed = 0;
+      const shouldEmptyLive = input.includeLiveBirds || 
+        input.scope === 'all' || 
+        (input.scope === 'category' && (input.category?.toLowerCase() === 'chicken' || input.category?.toLowerCase() === 'live birds'));
+
+      if (shouldEmptyLive) {
+        try {
+          const liveRes = db.prepare(`
+            UPDATE live_chicken_batches
+            SET status = 'exhausted', remaining_weight_grams = 0, remaining_count = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'active'
+          `).run();
+          liveBatchesClosed = liveRes.changes;
+        } catch (_) {}
+      }
+
+      // 4. Handle Refrigerator Stock
+      let fridgeItemsRemoved = 0;
+      const shouldEmptyFridge = input.includeRefrigerator || 
+        input.scope === 'all' || 
+        (input.scope === 'category' && input.category?.toLowerCase() === 'mutton');
+
+      if (shouldEmptyFridge) {
+        try {
+          const fridgeRes = db.prepare(`
+            UPDATE refrigerator_stock
+            SET status = 'removed', quantity_grams = 0, count = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'active'
+          `).run();
+          fridgeItemsRemoved = fridgeRes.changes;
+        } catch (_) {}
+      }
+
+      auditLogger.log(userId, 'EMPTY_INVENTORY', {
+        scope: input.scope,
+        category: input.category,
+        variantsReset,
+        batchesExhausted,
+        liveBatchesClosed,
+        fridgeItemsRemoved,
+        reason,
+      });
+
+      logger.info(`[Inventory] Emptied inventory: ${variantsReset} variants reset, ${batchesExhausted} batches exhausted, ${liveBatchesClosed} live batches closed, ${fridgeItemsRemoved} fridge items removed.`);
+
+      return {
+        success: true,
+        message: `Inventory successfully emptied: ${variantsReset} products reset to zero stock, ${batchesExhausted} batches exhausted${liveBatchesClosed > 0 ? `, ${liveBatchesClosed} live bird batches closed` : ''}${fridgeItemsRemoved > 0 ? `, ${fridgeItemsRemoved} cold storage items cleared` : ''}.`,
+        variantsReset,
+        batchesExhausted,
+        liveBatchesClosed,
+        fridgeItemsRemoved,
+      };
+    });
   }
 }
 

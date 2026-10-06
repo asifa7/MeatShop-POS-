@@ -50,6 +50,7 @@ export interface Invoice {
   round_off_paise?: number;
   narration?: string | null;
   print_delivery_token?: number;
+  whatsapp_delivery_status?: 'pending' | 'sent' | 'not_delivered' | null;
 }
 
 export interface ManualBatchAllocation {
@@ -78,6 +79,8 @@ export interface InvoiceItem {
   product_code: string;
   unit_type: 'weight' | 'piece' | 'live_dual';
   category: string;
+  stock_source?: 'processed_chicken' | 'mutton_regular' | 'refrigerator' | 'none';
+  refrigerator_stock_id?: number | null;
   is_manual_batch_selected?: number;
   manual_batch_allocations?: ManualBatchAllocation[];
 }

@@ -26,7 +26,12 @@ export default function ProductQuickSearch({
   const quantityInputRef = useRef<HTMLInputElement>(null);
 
   const quickVariants = useMemo(
-    () => [...(variants ?? [])].sort((a, b) => `${a.product_name} ${a.variant_name}`.localeCompare(`${b.product_name} ${b.variant_name}`)),
+    () =>
+      [...(variants ?? [])].sort((a, b) => {
+        const numA = Number(a.product_code?.replace(/\D/g, '') || a.id);
+        const numB = Number(b.product_code?.replace(/\D/g, '') || b.id);
+        return numA - numB;
+      }),
     [variants]
   );
 
@@ -99,26 +104,34 @@ export default function ProductQuickSearch({
     const cleanTerm = rawTerm.replace(/^#\s*/, '').trim();
     if (!cleanTerm && !rawTerm) return;
 
-    // 1. Try match by direct product_code (e.g. "1", "2", "101", "PRD-01")
-    const matchByCode = quickVariants.find(
-      v => v.product_code?.toLowerCase() === cleanTerm.toLowerCase() ||
-           v.product_code?.toLowerCase() === rawTerm.toLowerCase()
-    );
+    // Normalize code: strip leading zeros and PRD- prefix if any
+    const normalizedTerm = cleanTerm.replace(/^prd-0*/i, '').replace(/^0+/, '');
+
+    // 1. Try match by direct variant product_code (e.g. "1", "2", "11") or variant ID
+    const matchByCode = quickVariants.find(v => {
+      const pCode = (v.product_code || '').trim().toLowerCase();
+      const normPCode = pCode.replace(/^prd-0*/i, '').replace(/^0+/, '');
+      const strId = String(v.id);
+      return (
+        pCode === cleanTerm.toLowerCase() ||
+        pCode === rawTerm.toLowerCase() ||
+        (normalizedTerm !== '' && (normPCode === normalizedTerm || pCode === normalizedTerm || strId === normalizedTerm))
+      );
+    });
+
     if (matchByCode) {
       onSelectVariant(matchByCode);
       focusQuantityInput();
       return;
     }
 
-    // 2. Try match by sequential 1-based quick number index
-    const quickNumber = Number(cleanTerm);
-    if (Number.isInteger(quickNumber) && quickNumber >= 1 && quickVariants[quickNumber - 1]) {
-      onSelectVariant(quickVariants[quickNumber - 1]);
-      focusQuantityInput();
+    // 2. If input is purely numeric and has no product linked to it, reject immediately
+    if (/^\d+$/.test(normalizedTerm || cleanTerm)) {
+      setError(`Invalid invoice item: No product linked to code "${rawTerm}".`);
       return;
     }
 
-    // 3. Try match by name contains
+    // 3. Try match by name contains (for text searches)
     const matchByName = quickVariants.find(v =>
       `${v.product_name} ${v.variant_name}`.toLowerCase().includes(cleanTerm.toLowerCase())
     );
@@ -128,7 +141,7 @@ export default function ProductQuickSearch({
       return;
     }
 
-    setError(`No product found for code/number "${rawTerm}".`);
+    setError(`Invalid invoice item: No product linked to code "${rawTerm}".`);
   };
 
   const addSelectedProduct = async (source: 'quantity' | 'amount') => {
@@ -209,7 +222,7 @@ export default function ProductQuickSearch({
         <div className="rounded-lg border border-brand-500 bg-brand-500/10 p-3">
           <div className="flex items-center justify-between">
             <p className="text-xs font-extrabold text-text-primary">
-              #{selectedVariant.product_code || (quickIndex !== -1 ? quickIndex + 1 : '')} · {selectedVariant.product_name} {selectedVariant.variant_name !== 'Standard' ? `— ${selectedVariant.variant_name}` : ''}
+              #{selectedVariant.product_code || (quickIndex !== -1 ? quickIndex + 1 : '')} · {selectedVariant.product_name} {selectedVariant.variant_name && selectedVariant.variant_name !== 'Standard' && selectedVariant.variant_name !== 'Default' ? `— ${selectedVariant.variant_name}` : ''}
             </p>
             <span className="text-[11px] font-bold text-brand-500 font-mono">
               ₹{(selectedVariant.current_rate_paise_per_unit / 100).toFixed(2)} / {(selectedVariant.unit_type === 'weight' || selectedVariant.unit_type === 'live_dual') ? 'kg' : 'pc'}

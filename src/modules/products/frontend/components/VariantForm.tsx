@@ -3,7 +3,7 @@ import { X, Tag, IndianRupee } from 'lucide-react';
 import { rupeesToPaise } from '../../../../core/shared/math';
 import { formatPaise } from '../../../billing/frontend/types/billing.types';
 import type { AdminProduct, AdminProductVariant } from '../../types/products.types';
-import { useCreateVariant, useUpdateVariantRate, useUpdateVariantName, useUpdateVariantYield } from '../hooks/useProductMutations';
+import { useCreateVariant, useUpdateVariantRate, useUpdateVariantName } from '../hooks/useProductMutations';
 
 interface VariantFormProps {
   isOpen: boolean;
@@ -13,22 +13,19 @@ interface VariantFormProps {
   allProducts?: AdminProduct[];
 }
 
-type Mode = 'create' | 'edit-name' | 'edit-rate' | 'edit-yield';
+type Mode = 'create' | 'edit-name' | 'edit-rate';
 
-export default function VariantForm({ isOpen, onClose, parentProduct, editTarget, allProducts }: VariantFormProps) {
+export default function VariantForm({ isOpen, onClose, parentProduct, editTarget }: VariantFormProps) {
   const mode: Mode = !editTarget ? 'create' : 'edit-name';
 
   const createVariant = useCreateVariant();
   const updateRate = useUpdateVariantRate();
   const updateName = useUpdateVariantName();
-  const updateYield = useUpdateVariantYield();
 
   const [variantName, setVariantName] = useState('');
   const [rateRupees, setRateRupees] = useState('');
   const [costRupees, setCostRupees] = useState('');
   const [barcode, setBarcode] = useState('');
-  const [parentVariantId, setParentVariantId] = useState<number | ''>('');
-  const [yieldRatio, setYieldRatio] = useState<string>('');
   const [activeMode, setActiveMode] = useState<Mode>(mode);
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -43,15 +40,11 @@ export default function VariantForm({ isOpen, onClose, parentProduct, editTarget
         setRateRupees((editTarget.current_rate_paise_per_unit / 100).toFixed(2));
         setCostRupees(editTarget.cost_price_paise_per_unit ? (editTarget.cost_price_paise_per_unit / 100).toFixed(2) : '');
         setBarcode(editTarget.barcode || '');
-        setParentVariantId(editTarget.parent_variant_id ?? '');
-        setYieldRatio(editTarget.yield_ratio ? editTarget.yield_ratio.toString() : '');
       } else {
         setVariantName('');
         setRateRupees('');
         setCostRupees('');
         setBarcode('');
-        setParentVariantId('');
-        setYieldRatio('');
       }
     }
   }, [isOpen, editTarget]);
@@ -92,10 +85,6 @@ export default function VariantForm({ isOpen, onClose, parentProduct, editTarget
         await updateRate.mutateAsync({ variant_id: editTarget.id, new_rate_paise: ratePaise });
       } else if (activeMode === 'edit-name' && editTarget) {
         await updateName.mutateAsync({ variant_id: editTarget.id, variant_name: variantName });
-      } else if (activeMode === 'edit-yield' && editTarget) {
-        const pId = parentVariantId === '' ? null : Number(parentVariantId);
-        const yRatio = yieldRatio === '' ? null : Number(yieldRatio);
-        await updateYield.mutateAsync({ variant_id: editTarget.id, parent_variant_id: pId, yield_ratio: yRatio });
       }
       onClose();
     } catch (e: any) {
@@ -131,11 +120,7 @@ export default function VariantForm({ isOpen, onClose, parentProduct, editTarget
         {/* Mode tabs — only for edit */}
         {editTarget && (
           <div className="flex gap-1 p-4 pb-0 overflow-x-auto hide-scrollbar">
-            {([
-              'edit-name', 
-              'edit-rate', 
-              ...(parentProduct.is_processed_cut === 1 ? ['edit-yield'] : [])
-            ] as Mode[]).map(m => (
+            {(['edit-name', 'edit-rate'] as Mode[]).map(m => (
               <button
                 key={m}
                 type="button"
@@ -146,7 +131,7 @@ export default function VariantForm({ isOpen, onClose, parentProduct, editTarget
                     : 'bg-surface-app border-border-subtle text-text-muted hover:text-text-secondary'
                 }`}
               >
-                {m === 'edit-name' ? 'Rename' : m === 'edit-rate' ? 'Rate' : 'Yield Rules'}
+                {m === 'edit-name' ? 'Rename' : 'Rate'}
               </button>
             ))}
           </div>
@@ -228,50 +213,6 @@ export default function VariantForm({ isOpen, onClose, parentProduct, editTarget
             </div>
           )}
 
-          {/* Yield fields */}
-          {activeMode === 'edit-yield' && (
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-[11px] font-bold text-text-muted uppercase tracking-wider">Parent Variant (Auto-Yield Source)</label>
-                <select
-                  value={parentVariantId}
-                  onChange={e => setParentVariantId(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full bg-surface-app border border-border-subtle rounded-xl px-3 py-2.5 text-xs font-semibold text-text-secondary outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors"
-                >
-                  <option value="">No Parent (Standalone Stock)</option>
-                  {(allProducts || []).filter(p => p.unit_type === 'live_dual' || p.unit_type === 'weight').map(p => (
-                    <optgroup key={p.id} label={p.name}>
-                      {p.variants.map(v => (
-                        <option key={v.id} value={v.id}>{v.variant_name}</option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-                <p className="text-[10px] text-text-muted">
-                  If set, selling this cut will deduct stock from the parent variant instead.
-                </p>
-              </div>
-
-              {parentVariantId !== '' && (
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-text-muted uppercase tracking-wider">Yield Ratio (Parent Weight / Cut Weight)</label>
-                  <input
-                    type="number"
-                    value={yieldRatio}
-                    onChange={e => setYieldRatio(e.target.value)}
-                    placeholder="e.g. 1.54"
-                    step="0.01"
-                    min="1"
-                    required
-                    className="w-full bg-surface-app border border-border-subtle rounded-xl px-3 py-2.5 text-xs font-semibold text-text-secondary placeholder-text-muted outline-none focus:border-accent focus:ring-1 focus:ring-accent transition-colors font-mono"
-                  />
-                  <p className="text-[10px] text-text-muted">
-                    Example: A 1.54 ratio means selling 1kg of this cut deducts 1.54kg from the parent.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
 
           {/* Rate-change confirmation */}
           {activeMode === 'edit-rate' && rateChanged && (
